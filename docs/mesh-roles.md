@@ -1,15 +1,16 @@
-# Mesh 角色（ESP-IDF）
+# Mesh 角色（ESP-IDF 组件 `en2m`）
 
-在固件 `app_main` 里选定角色（开发期写死，运行时不再改）：
+在固件里初始化组件时选定角色：
 
 ```c
-// firmware/leaf/main/main.c
-en2m_device_app_start(EN2M_ROLE_LEAF, "leaf1", "c3-leaf");
+#include "en2m.h"
 
-// firmware/router/main/main.c
-en2m_device_app_start(EN2M_ROLE_ROUTER, "router1", "c3-router");
-
-// firmware/coordinator — en2m_mesh_init({ .role = EN2M_ROLE_COORDINATOR, ... })
+en2m_config_t config = {
+    .role = EN2M_ROLE_LEAF,   // 或 ROUTER / COORDINATOR
+    .name = "leaf1",
+    .model = "ex-th",
+};
+en2m_mesh_init(&config);
 ```
 
 | 角色 | 转发 | Beacon | 供电 |
@@ -18,4 +19,4 @@ en2m_device_app_start(EN2M_ROLE_ROUTER, "router1", "c3-router");
 | Router | 是 | cost=parent+1 | 常电 |
 | Leaf | 否 | 否 | 可电池 |
 
-自研设备：依赖 `en2m` 组件，在 `en2m_config_t.role` 填角色即可。
+自建设备：把 `components/en2m` 放进工程并 `REQUIRES en2m` 即可，无需再包一层 SDK。

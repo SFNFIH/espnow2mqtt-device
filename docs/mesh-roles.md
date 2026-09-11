@@ -18,4 +18,4 @@ en2m_device_app_start(EN2M_ROLE_ROUTER, "router1", "c3-router");
 | Router | 是 | cost=parent+1 | 常电 |
 | Leaf | 否 | 否 | 可电池 |
 
-自研设备：依赖 `espnow2mqtt_mesh` 组件，在 `en2m_app_config_t.role` 填角色即可。
+自研设备：依赖 `en2m` 组件，在 `en2m_config_t.role` 填角色即可。

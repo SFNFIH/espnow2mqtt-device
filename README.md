@@ -7,7 +7,7 @@ ESP32 mesh firmware & SDK for **ESP-NOW → Home Assistant**.
 | USB Coordinator (ESP32-S3) | `firmware/coordinator` |
 | Mesh Router (ESP32-C3, mains) | `firmware/router` |
 | Device examples | `firmware/examples/*` |
-| Mesh SDK | `components/espnow2mqtt_mesh` |
+| Mesh SDK | `components/en2m` |
 
 ## Related repos
 

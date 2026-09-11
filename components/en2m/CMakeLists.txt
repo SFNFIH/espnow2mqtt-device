@@ -1,0 +1,16 @@
+idf_component_register(
+    SRCS
+        "src/en2m_mac.c"
+        "src/en2m_mesh.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_INCLUDE_DIRS
+        "src"
+    REQUIRES
+        esp_wifi
+        esp_common
+        nvs_flash
+        esp_event
+        esp_netif
+        esp_timer
+)

@@ -1,0 +1,19 @@
+# Matches ESP-IDF clang-format defaults (see esp-idf/.clang-format)
+BasedOnStyle: LLVM
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 120
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: InlineOnly
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterControlStatement: false
+  BeforeElse: false
+  IndentBraces: false
+SortIncludes: false
+PointerAlignment: Right
+SpaceBeforeParens: ControlStatements
+SpacesInAngles: false

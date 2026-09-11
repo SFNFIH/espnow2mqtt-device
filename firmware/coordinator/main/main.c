@@ -334,6 +334,7 @@ void app_main(void)
         .channel = EN2M_WIFI_CHANNEL,
         .on_uplink = on_uplink,
         .on_log = on_mesh_log,
+        .user_ctx = NULL,
     };
     ESP_ERROR_CHECK(en2m_mesh_init(&cfg));
 

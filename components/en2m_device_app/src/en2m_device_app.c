@@ -277,6 +277,7 @@ esp_err_t en2m_device_app_start(uint8_t role, const char *name, const char *mode
         .channel = EN2M_WIFI_CHANNEL,
         .on_command = on_command,
         .on_log = on_log,
+        .user_ctx = NULL,
     };
     err = en2m_mesh_init(&cfg);
     if (err != ESP_OK) {

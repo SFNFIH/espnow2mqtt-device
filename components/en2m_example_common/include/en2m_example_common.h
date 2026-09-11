@@ -1,3 +1,8 @@
+/**
+ * @file en2m_example_common.h
+ * @brief Shared helpers for firmware examples (not part of core mesh API).
+ */
+
 #pragma once
 
 #include <stdbool.h>
@@ -12,40 +17,35 @@ extern "C" {
 #endif
 
 typedef struct {
-    uint8_t role; /* usually EN2M_ROLE_LEAF; routers use EN2M_ROLE_ROUTER */
-    const char *name;
-    const char *model;
-    const char *fw;
-    uint8_t channel;
-    en2m_command_cb_t on_command; /* NULL for report-only devices */
-    void *user;
-} en2m_example_cfg_t;
+    en2m_role_t role;             /**< Usually EN2M_ROLE_LEAF */
+    const char *name;             /**< Friendly name / MQTT slug */
+    const char *model;            /**< Model string */
+    const char *fw;               /**< Optional firmware version */
+    uint8_t channel;              /**< 0 = default */
+    en2m_command_cb_t on_command; /**< NULL for report-only devices */
+    void *user_ctx;
+} en2m_example_config_t;
 
-esp_err_t en2m_example_mesh_start(const en2m_example_cfg_t *cfg);
+/** @deprecated Prefer ::en2m_example_config_t */
+typedef en2m_example_config_t en2m_example_cfg_t;
 
-/** Periodic mesh maintenance; call from app task. */
+esp_err_t en2m_example_mesh_start(const en2m_example_config_t *config);
 void en2m_example_mesh_tick(void);
 
-/** Publish HELLO with optional JSON object string (already formatted object body). */
 esp_err_t en2m_example_send_hello(const char *json_object);
-
-/** Publish STATE JSON object. */
 esp_err_t en2m_example_send_state(const char *json_object);
-
-/** Publish ACK for a command id. */
 esp_err_t en2m_example_send_ack(uint16_t cmd_id, const char *json_object);
 
 /**
- * Build a JSON object string into buf.
- * extras is optional already-serialized fragment without braces, e.g.
- *   "\"temperature\":23.5,\"humidity\":40"
- * Always includes node_role / path_cost / parent when attached.
- * Returns length or -1.
+ * @brief Build a compact JSON object into @p buf.
+ *
+ * @param caps_csv Comma-separated capability list, e.g. "temperature,humidity"
+ * @param extras   Optional extra JSON fields without surrounding braces
+ * @return Length written, or -1 on overflow / error
  */
-int en2m_example_build_base_json(char *buf, size_t buflen, const char *caps_csv,
-                                 const char *extras);
+int en2m_example_build_base_json(char *buf, size_t buflen, const char *caps_csv, const char *extras);
 
-bool en2m_example_dht_read(int gpio, int dht_type, float *temp_c, float *hum);
+bool en2m_example_dht_read(int gpio_num, int dht_type, float *temp_c, float *humidity);
 
 #ifdef __cplusplus
 }

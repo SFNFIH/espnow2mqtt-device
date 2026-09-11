@@ -1,0 +1,6 @@
+dependencies:
+  idf:
+    version: ">=5.0"
+description: ESP-NOW mesh transport for ESP-NOW 2 MQTT (coordinator / router / leaf)
+url: https://github.com/SFNFIH/espnow2mqtt-firmware
+version: 0.3.1

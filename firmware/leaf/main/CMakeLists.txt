@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "main.c"
     INCLUDE_DIRS "."
-    REQUIRES en2m_device_app espnow2mqtt_mesh
+    REQUIRES en2m_device_app en2m
 )

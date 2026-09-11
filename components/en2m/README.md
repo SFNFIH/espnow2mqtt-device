@@ -8,6 +8,10 @@ ESP-Matter-like split:
 | Transport (ESP-NOW mesh) | **Yes** (`en2m_mesh.h`) |
 | Hardware drivers (GPIO, I2C, DHT…) | **No** — bind via driver ops |
 
+Supported clusters (HA-oriented Matter subset): OnOff, Level, ColorControl (CT),
+BooleanState, Occupancy, Illuminance, Temperature, Humidity, Pressure,
+ElectricalPower, FanControl, WindowCovering, DoorLock, Thermostat, SmokeCO.
+
 ```c
 #include "en2m.h"
 

@@ -1,12 +1,18 @@
 # 设备示例（驱动绑定）
 
-示例只负责 **把参考驱动绑到 en2m cluster**，外设代码在 `firmware/drivers/`，不在 `en2m` 组件内。
+示例只负责 **把驱动绑到 en2m cluster**。参考 GPIO/DHT 驱动在 `firmware/drivers/`；灯/风扇/窗帘等示例用 **内存 stub**，方便先打通 HA 实体再换真硬件。
 
-| 示例 | Cluster | 参考驱动 |
-|------|---------|----------|
+| 示例 | Cluster | 说明 |
+|------|---------|------|
 | th_sensor | Temperature + Humidity | `drv_dht` |
 | contact_sensor | Boolean State | `drv_gpio_contact` |
-| relay_switch | OnOff | `drv_gpio_relay` |
-| smart_plug | OnOff + Electrical Power | `drv_gpio_relay` + stub metering |
+| relay_switch | OnOff | `drv_gpio_relay` → HA switch |
+| smart_plug | OnOff + Electrical Power | 继电器 + 功率 stub |
+| dimmable_light | OnOff + Level + ColorControl | HA **light**（亮度+色温） |
+| fan_controller | Fan Control | HA **fan** |
+| window_cover | Window Covering | HA **cover** |
+| door_lock | Door Lock | HA **lock** |
+| thermostat | Thermostat | HA **climate** |
+| occupancy_sensor | Occupancy + Illuminance + Smoke | 二元/光照传感器 |
 
-自建设备：实现自己的 `*_driver_t` ops，然后 `en2m_endpoint_add_*`。
+自建设备：实现对应 `*_driver_t` ops，然后 `en2m_endpoint_add_*`。

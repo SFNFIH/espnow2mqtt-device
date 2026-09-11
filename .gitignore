@@ -8,3 +8,6 @@ firmware/**/build/
 firmware/**/sdkconfig
 .DS_Store
 *.tar.gz
+
+examples/**/build/
+examples/**/sdkconfig

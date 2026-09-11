@@ -1,84 +1,73 @@
 /**
- * Stub example: dimmable CCT light — OnOff + Level + ColorControl (mireds).
- * Replace stub drivers with PWM / LED IC drivers.
+ * Tunable white light — OnOff + Level + ColorControl.
+ *
+ * One write callback covers all three clusters. Replace the stub with LEDC,
+ * PWM or an LED driver IC; the interaction layer does not change.
  */
 #include "en2m.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "nvs_flash.h"
+
+#define ENDPOINT 1
 
 static const char *TAG = "ex_light";
-static bool s_on = true;
-static uint8_t s_level = 200;
-static uint16_t s_mireds = 300;
 
-static esp_err_t stub_set_on(bool on, void *ctx)
+/* Stand-in for the real light engine. */
+static struct {
+    bool on;
+    uint8_t level;
+    uint16_t mireds;
+} s_light = {.on = false, .level = 254, .mireds = 300};
+
+static void light_apply(void)
 {
-    (void)ctx;
-    s_on = on;
-    return ESP_OK;
+    ESP_LOGI(TAG, "output: %s level=%u mireds=%u", s_light.on ? "on" : "off", s_light.level,
+             s_light.mireds);
 }
-static esp_err_t stub_get_on(bool *on, void *ctx)
+
+static esp_err_t on_write(const en2m_attr_path_t *path, const en2m_value_t *value, void *ctx)
 {
     (void)ctx;
-    *on = s_on;
-    return ESP_OK;
-}
-static esp_err_t stub_set_level(uint8_t level, void *ctx)
-{
-    (void)ctx;
-    s_level = level;
-    if (level > 0) {
-        s_on = true;
+
+    switch (path->cluster_id) {
+    case EN2M_CLUSTER_ON_OFF:
+        s_light.on = value->v.b;
+        break;
+    case EN2M_CLUSTER_LEVEL_CONTROL:
+        s_light.level = value->v.u8;
+        break;
+    case EN2M_CLUSTER_COLOR_CONTROL:
+        s_light.mireds = value->v.u16;
+        break;
+    default:
+        return ESP_ERR_NOT_SUPPORTED;
     }
-    return ESP_OK;
-}
-static esp_err_t stub_get_level(uint8_t *level, void *ctx)
-{
-    (void)ctx;
-    *level = s_level;
-    return ESP_OK;
-}
-static esp_err_t stub_set_ct(uint16_t mireds, void *ctx)
-{
-    (void)ctx;
-    s_mireds = mireds;
-    return ESP_OK;
-}
-static esp_err_t stub_get_ct(uint16_t *mireds, void *ctx)
-{
-    (void)ctx;
-    *mireds = s_mireds;
+
+    light_apply();
     return ESP_OK;
 }
 
-static void app_task(void *arg)
+static void on_identify(uint8_t endpoint_id, uint16_t seconds, void *ctx)
 {
-    (void)arg;
-    while (1) {
-        en2m_model_loop();
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
+    (void)ctx;
+    ESP_LOGI(TAG, "identify endpoint %u, %u s left", endpoint_id, seconds);
 }
 
 void app_main(void)
 {
-    en2m_endpoint_t *ep;
-    en2m_config_t mesh = {
-        .role = EN2M_ROLE_LEAF,
-        .name = "light1",
-        .model = "ex-light",
+    en2m_device_config_t cfg = {
+        .mesh = {.role = EN2M_ROLE_LEAF, .name = "light1", .model = "ex-light"},
+        .attribute_write = on_write,
+        .identify = on_identify,
     };
+    en2m_endpoint_t *ep;
 
-    ESP_LOGI(TAG, "light: OnOff+Level+ColorTemp stubs");
-    ESP_ERROR_CHECK(nvs_flash_init());
-    ep = en2m_endpoint_create(1);
-    ESP_ERROR_CHECK(en2m_endpoint_add_on_off(ep, &(en2m_on_off_driver_t){.set = stub_set_on, .get = stub_get_on}));
-    ESP_ERROR_CHECK(en2m_endpoint_add_level_control(ep, &(en2m_level_driver_t){.set_level = stub_set_level,
-                                                                                .get_level = stub_get_level}));
-    ESP_ERROR_CHECK(en2m_endpoint_add_color_control(ep, &(en2m_color_control_driver_t){.set_color_temp = stub_set_ct,
-                                                                                        .get_color_temp = stub_get_ct}));
-    ESP_ERROR_CHECK(en2m_model_start(&mesh));
-    xTaskCreate(app_task, "light", 6144, NULL, 4, NULL);
+    ep = en2m_endpoint_create_device(ENDPOINT, EN2M_DEVICE_TYPE_COLOR_TEMPERATURE_LIGHT);
+    if (ep == NULL) {
+        ESP_LOGE(TAG, "could not create the endpoint");
+        return;
+    }
+    en2m_cluster_create(ep, EN2M_CLUSTER_IDENTIFY);
+
+    ESP_ERROR_CHECK(en2m_start(&cfg));
+    ESP_LOGI(TAG, "ready — brightness and colour temperature arrive as writes");
 }

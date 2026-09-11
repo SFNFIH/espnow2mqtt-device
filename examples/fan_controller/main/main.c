@@ -1,70 +1,68 @@
 /**
- * Stub example: fan — FanControl cluster (mode + percentage).
+ * Fan — FanControl cluster.
+ *
+ * Uses a per-cluster write callback (en2m_cluster_set_write_cb) instead of the
+ * device-wide one. That is the pattern to reach for when a firmware drives
+ * several unrelated peripherals: each cluster gets its own handler and its own
+ * context, and no handler needs to know about the others.
  */
 #include "en2m.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "nvs_flash.h"
+
+#define ENDPOINT 1
 
 static const char *TAG = "ex_fan";
-static en2m_fan_mode_t s_mode = EN2M_FAN_OFF;
-static uint8_t s_pct = 0;
 
-static esp_err_t stub_set_mode(en2m_fan_mode_t mode, void *ctx)
+typedef struct {
+    const char *label;
+    uint8_t percent;
+    en2m_fan_mode_t mode;
+} fan_ctx_t;
+
+static fan_ctx_t s_fan = {.label = "ceiling"};
+
+static void fan_apply(fan_ctx_t *fan)
 {
-    (void)ctx;
-    s_mode = mode;
-    if (mode == EN2M_FAN_OFF) {
-        s_pct = 0;
-    } else if (s_pct == 0) {
-        s_pct = 50;
-    }
-    return ESP_OK;
-}
-static esp_err_t stub_get_mode(en2m_fan_mode_t *mode, void *ctx)
-{
-    (void)ctx;
-    *mode = s_mode;
-    return ESP_OK;
-}
-static esp_err_t stub_set_pct(uint8_t percent, void *ctx)
-{
-    (void)ctx;
-    s_pct = percent > 100 ? 100 : percent;
-    s_mode = (s_pct == 0) ? EN2M_FAN_OFF : EN2M_FAN_ON;
-    return ESP_OK;
-}
-static esp_err_t stub_get_pct(uint8_t *percent, void *ctx)
-{
-    (void)ctx;
-    *percent = s_pct;
-    return ESP_OK;
+    /* Replace with the LEDC / triac / EC-motor output. */
+    ESP_LOGI(TAG, "%s fan: mode=%d duty=%u%%", fan->label, (int)fan->mode, fan->percent);
 }
 
-static void app_task(void *arg)
+static esp_err_t on_fan_write(const en2m_attr_path_t *path, const en2m_value_t *value, void *ctx)
 {
-    (void)arg;
-    while (1) {
-        en2m_model_loop();
-        vTaskDelay(pdMS_TO_TICKS(50));
+    fan_ctx_t *fan = (fan_ctx_t *)ctx;
+
+    switch (path->attribute_id) {
+    case EN2M_ATTR_FAN_MODE:
+        fan->mode = (en2m_fan_mode_t)value->v.e8;
+        break;
+    case EN2M_ATTR_PERCENT_SETTING:
+        fan->percent = value->v.u8;
+        break;
+    default:
+        return ESP_ERR_NOT_SUPPORTED;
     }
+
+    fan_apply(fan);
+    return ESP_OK;
 }
 
 void app_main(void)
 {
+    en2m_device_config_t cfg = {
+        .mesh = {.role = EN2M_ROLE_LEAF, .name = "fan1", .model = "ex-fan"},
+    };
     en2m_endpoint_t *ep;
-    en2m_config_t mesh = {.role = EN2M_ROLE_LEAF, .name = "fan1", .model = "ex-fan"};
+    en2m_cluster_t *fan_cluster;
 
-    ESP_LOGI(TAG, "fan: FanControl stub");
-    ESP_ERROR_CHECK(nvs_flash_init());
-    ep = en2m_endpoint_create(1);
-    ESP_ERROR_CHECK(en2m_endpoint_add_fan_control(ep, &(en2m_fan_control_driver_t){
-                                                          .set_mode = stub_set_mode,
-                                                          .get_mode = stub_get_mode,
-                                                          .set_percent = stub_set_pct,
-                                                          .get_percent = stub_get_pct,
-                                                      }));
-    ESP_ERROR_CHECK(en2m_model_start(&mesh));
-    xTaskCreate(app_task, "fan", 6144, NULL, 4, NULL);
+    ep = en2m_endpoint_create_device(ENDPOINT, EN2M_DEVICE_TYPE_FAN);
+    if (ep == NULL) {
+        ESP_LOGE(TAG, "could not create the endpoint");
+        return;
+    }
+
+    fan_cluster = en2m_cluster_get(ep, EN2M_CLUSTER_FAN_CONTROL);
+    ESP_ERROR_CHECK(en2m_cluster_set_write_cb(fan_cluster, on_fan_write, &s_fan));
+
+    ESP_ERROR_CHECK(en2m_start(&cfg));
+    ESP_LOGI(TAG, "ready — mode and percentage are kept consistent by the component");
 }

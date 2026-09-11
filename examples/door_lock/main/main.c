@@ -1,56 +1,45 @@
 /**
- * Stub example: door lock — DoorLock cluster.
+ * Door lock — DoorLock cluster.
+ *
+ * The lock state is persisted, so en2m_start replays it into the actuator
+ * before the first report goes out.
  */
 #include "en2m.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "nvs_flash.h"
+
+#define ENDPOINT 1
 
 static const char *TAG = "ex_lock";
-static bool s_locked = true;
 
-static esp_err_t stub_lock(void *ctx)
+static esp_err_t bolt_drive(bool locked)
 {
-    (void)ctx;
-    s_locked = true;
-    return ESP_OK;
-}
-static esp_err_t stub_unlock(void *ctx)
-{
-    (void)ctx;
-    s_locked = false;
-    return ESP_OK;
-}
-static esp_err_t stub_get(bool *locked, void *ctx)
-{
-    (void)ctx;
-    *locked = s_locked;
+    /* Replace with the solenoid / motor sequence. */
+    ESP_LOGI(TAG, "bolt %s", locked ? "extended" : "retracted");
     return ESP_OK;
 }
 
-static void app_task(void *arg)
+static esp_err_t on_write(const en2m_attr_path_t *path, const en2m_value_t *value, void *ctx)
 {
-    (void)arg;
-    while (1) {
-        en2m_model_loop();
-        vTaskDelay(pdMS_TO_TICKS(50));
+    (void)ctx;
+
+    if (path->cluster_id != EN2M_CLUSTER_DOOR_LOCK) {
+        return ESP_ERR_NOT_SUPPORTED;
     }
+    return bolt_drive(value->v.e8 == EN2M_LOCK_LOCKED);
 }
 
 void app_main(void)
 {
-    en2m_endpoint_t *ep;
-    en2m_config_t mesh = {.role = EN2M_ROLE_LEAF, .name = "lock1", .model = "ex-lock"};
+    en2m_device_config_t cfg = {
+        .mesh = {.role = EN2M_ROLE_LEAF, .name = "lock1", .model = "ex-lock"},
+        .attribute_write = on_write,
+    };
 
-    ESP_LOGI(TAG, "lock: DoorLock stub");
-    ESP_ERROR_CHECK(nvs_flash_init());
-    ep = en2m_endpoint_create(1);
-    ESP_ERROR_CHECK(en2m_endpoint_add_door_lock(ep, &(en2m_door_lock_driver_t){
-                                                        .lock = stub_lock,
-                                                        .unlock = stub_unlock,
-                                                        .get_locked = stub_get,
-                                                    }));
-    ESP_ERROR_CHECK(en2m_model_start(&mesh));
-    xTaskCreate(app_task, "lock", 6144, NULL, 4, NULL);
+    if (en2m_endpoint_create_device(ENDPOINT, EN2M_DEVICE_TYPE_DOOR_LOCK) == NULL) {
+        ESP_LOGE(TAG, "could not create the endpoint");
+        return;
+    }
+
+    ESP_ERROR_CHECK(en2m_start(&cfg));
+    ESP_LOGI(TAG, "ready");
 }

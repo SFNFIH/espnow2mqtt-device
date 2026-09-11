@@ -1,5 +1,0 @@
-idf_component_register(
-    SRCS "main.c"
-    INCLUDE_DIRS "."
-    REQUIRES en2m_device_app en2m
-)

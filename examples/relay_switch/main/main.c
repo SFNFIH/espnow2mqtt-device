@@ -1,67 +1,78 @@
 /**
- * Example: relay switch — OnOff cluster + GPIO relay driver.
- * Local button is also driver-side input that notifies the model.
+ * Relay switch — OnOff cluster.
+ *
+ * Shows the two directions of control with no application loop at all:
+ *  - remote:  the component calls on_write() and reports once the relay moved
+ *  - local:   the button ISR defers a toggle onto the en2m task
  */
-#include "driver/gpio.h"
 #include "en2m.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "nvs_flash.h"
 
+#include "../../../drivers/drv_gpio_button.h"
 #include "../../../drivers/drv_gpio_relay.h"
 
-#ifndef PIN_BUTTON
+#define PIN_RELAY GPIO_NUM_5
 #define PIN_BUTTON GPIO_NUM_9
-#endif
+#define ENDPOINT 1
 
 static const char *TAG = "ex_switch";
 
-static void app_task(void *arg)
+/** The only place this firmware touches the relay. */
+static esp_err_t on_write(const en2m_attr_path_t *path, const en2m_value_t *value, void *ctx)
 {
-    int last_btn = 1;
-    (void)arg;
-    gpio_config_t in = {
-        .pin_bit_mask = 1ULL << PIN_BUTTON,
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = 1,
-    };
-    gpio_config(&in);
+    if (path->cluster_id == EN2M_CLUSTER_ON_OFF) {
+        return drv_gpio_relay_set(value->v.b, ctx);
+    }
+    return ESP_ERR_NOT_SUPPORTED;
+}
 
-    while (1) {
-        int btn = gpio_get_level(PIN_BUTTON);
-        en2m_model_loop();
-        if (last_btn == 1 && btn == 0) {
-            bool on = false;
-            drv_gpio_relay_get(&on, NULL);
-            drv_gpio_relay_set(!on, NULL);
-            en2m_model_notify(1, EN2M_CLUSTER_ON_OFF, true);
-            vTaskDelay(pdMS_TO_TICKS(40));
-        }
-        last_btn = btn;
-        vTaskDelay(pdMS_TO_TICKS(20));
+static void on_attribute_changed(const en2m_attr_path_t *path, const en2m_value_t *value, void *ctx)
+{
+    (void)path;
+    (void)ctx;
+    ESP_LOGI(TAG, "relay is now %s", value->v.b ? "on" : "off");
+}
+
+/** Runs on the en2m task, so it may use the full API. */
+static void toggle(void *arg)
+{
+    en2m_value_t current;
+
+    (void)arg;
+    if (en2m_attribute_get(ENDPOINT, EN2M_CLUSTER_ON_OFF, EN2M_ATTR_ON_OFF, &current) != ESP_OK) {
+        return;
+    }
+    en2m_attribute_write(ENDPOINT, EN2M_CLUSTER_ON_OFF, EN2M_ATTR_ON_OFF, en2m_bool(!current.v.b));
+}
+
+static void on_button(void *ctx)
+{
+    BaseType_t woken = pdFALSE;
+
+    (void)ctx;
+    en2m_schedule_from_isr(toggle, NULL, &woken);
+    if (woken) {
+        portYIELD_FROM_ISR();
     }
 }
 
 void app_main(void)
 {
-    en2m_endpoint_t *ep;
-    en2m_config_t mesh = {
-        .role = EN2M_ROLE_LEAF,
-        .name = "relay1",
-        .model = "ex-switch",
+    en2m_device_config_t cfg = {
+        .mesh = {.role = EN2M_ROLE_LEAF, .name = "relay1", .model = "ex-switch"},
+        .attribute_write = on_write,
+        .attribute_changed = on_attribute_changed,
     };
 
-    ESP_LOGI(TAG, "switch: OnOff ← relay driver");
-    ESP_ERROR_CHECK(nvs_flash_init());
-    ESP_ERROR_CHECK(drv_gpio_relay_init(GPIO_NUM_5, true));
+    ESP_ERROR_CHECK(drv_gpio_relay_init(PIN_RELAY, true));
+    ESP_ERROR_CHECK(drv_gpio_button_init(PIN_BUTTON, true, 40, on_button, NULL));
 
-    ep = en2m_endpoint_create(1);
-    ESP_ERROR_CHECK(en2m_endpoint_add_on_off(ep, &(en2m_on_off_driver_t){
-                                                     .set = drv_gpio_relay_set,
-                                                     .get = drv_gpio_relay_get,
-                                                 }));
+    if (en2m_endpoint_create_device(ENDPOINT, EN2M_DEVICE_TYPE_ON_OFF_PLUG) == NULL) {
+        ESP_LOGE(TAG, "could not create the endpoint");
+        return;
+    }
 
-    ESP_ERROR_CHECK(en2m_model_start(&mesh));
-    xTaskCreate(app_task, "sw", 6144, NULL, 4, NULL);
+    /* The relay state is persisted, so en2m_start restores it into the driver. */
+    ESP_ERROR_CHECK(en2m_start(&cfg));
+    ESP_LOGI(TAG, "ready — the component owns the task from here");
 }

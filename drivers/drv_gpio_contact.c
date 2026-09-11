@@ -35,3 +35,22 @@ esp_err_t drv_gpio_contact_get(bool *open, void *ctx)
     }
     return ESP_OK;
 }
+
+esp_err_t drv_gpio_contact_watch(gpio_isr_t handler, void *arg)
+{
+    esp_err_t err;
+
+    if (handler == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    err = gpio_set_intr_type(s_contact.pin, GPIO_INTR_ANYEDGE);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = gpio_install_isr_service(0);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        return err;
+    }
+    return gpio_isr_handler_add(s_contact.pin, handler, arg);
+}

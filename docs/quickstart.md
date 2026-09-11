@@ -8,7 +8,7 @@
 3. 本仓库烧录示例，例如：
 
 ```bash
-cd firmware/examples/relay_switch
+cd examples/relay_switch
 idf.py set-target esp32c3
 idf.py build flash
 ```

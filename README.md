@@ -3,8 +3,8 @@
 **本仓库 = C3（及同类）终端 / 路由设备固件。**
 
 - ESP-IDF 组件 **`en2m`**：mesh + Matter 风格 Endpoint/Cluster（交互层）
-- **`firmware/examples/*`**：开关、灯、风扇、窗帘、锁、温控、传感等示例
-- **`firmware/drivers/`**：参考驱动（GPIO / DHT…），**不属于** `en2m`
+- **`examples/*`**：开关、灯、风扇、窗帘、锁、温控、传感等示例（仓库根目录）
+- **`drivers/`**：参考驱动（GPIO / DHT…），**不属于** `en2m`
 - **`firmware/router`**：常电转发节点
 - **`firmware/leaf`**：最小 leaf 骨架
 
@@ -22,7 +22,7 @@ HA 插件在：**[espnow2mqtt-ha](https://github.com/SFNFIH/espnow2mqtt-ha)**
 
 | 层 | 在哪 |
 |----|------|
-| 驱动（GPIO/I2C/DHT/PWM…） | 你的 `app_main` / `firmware/drivers` |
+| 驱动（GPIO/I2C/DHT/PWM…） | 你的 `app_main` / `drivers/` |
 | 交互（Endpoint / Cluster / 命令） | `components/en2m` → `en2m_model` |
 | 传输（ESP-NOW 树） | `components/en2m` → `en2m_mesh` |
 
@@ -35,7 +35,7 @@ HA 插件在：**[espnow2mqtt-ha](https://github.com/SFNFIH/espnow2mqtt-ha)**
 需要 [ESP-IDF 5.x](https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/get-started/)。
 
 ```bash
-cd firmware/examples/relay_switch   # 或其它示例
+cd examples/relay_switch   # 或其它示例
 idf.py set-target esp32c3
 idf.py build flash monitor
 ```
@@ -108,12 +108,12 @@ for (;;) {
 ## 仓库结构
 
 ```
-components/en2m/              # 核心组件（设备侧权威副本）
-firmware/drivers/             # 参考驱动
-firmware/examples/            # 示例工程
+examples/                     # 示例工程（根目录）
+drivers/                      # 参考驱动
+components/en2m/              # 核心组件
 firmware/router/              # 路由
 firmware/leaf/                # 最小 leaf
-docs/                         # 架构 / 接线 / 角色
+docs/
 protocol/PROTOCOL.md
 ```
 

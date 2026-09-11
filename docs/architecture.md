@@ -7,7 +7,7 @@ Application
 
 - **Interaction layer** (`en2m_model`): endpoints, clusters, attribute reports, commands  
 - **Transport layer** (`en2m_mesh`): tree mesh over ESP-NOW  
-- **Driver layer**: out of tree (`firmware/drivers` are references only)
+- **Driver layer**: out of tree (`drivers/` at repo root are references only)
 
 Downstream JSON uses **flat HA aliases** (`switch`, `temperature`, `brightness`, …)
 plus `caps` and a short `clusters` name list. Nested endpoint dumps are omitted on-air

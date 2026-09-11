@@ -1,0 +1,4 @@
+dependencies:
+  idf: ">=5.0"
+  # https://components.espressif.com/components/espressif/button
+  espressif/button: "^4.2.1"

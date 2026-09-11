@@ -1,8 +1,11 @@
 # 示例
 
 每个子目录都是一个**可以独立编译烧写的 ESP-IDF 工程**，目标芯片 ESP32-C3。
-共享的组件在仓库根目录的 [`components/en2m`](../components/en2m)，
-共享的参考驱动在 [`drivers/`](../drivers)。
+共享的组件在仓库根目录的 [`components/en2m`](../components/en2m)。
+
+**示例里所有外设驱动都来自 [ESP 组件注册表](https://components.espressif.com)**，
+本仓库不自带任何手写驱动。每个工程的 `main/idf_component.yml` 声明自己要哪几个组件，
+`idf.py build` 会自动下载到该工程的 `managed_components/`，你不需要手动装什么。
 
 先读这一句再选示例：**这十一个示例不是十一种设备，是十一种"把硬件接到这个库上"的姿势。**
 你要抄的是**回调组合**，不是设备类型。想做一个水浸传感器，
@@ -15,12 +18,12 @@
 | 示例 | 做什么 | 回调组合 | 接的外设 | HA 里出现 |
 |---|---|---|---|---|
 | [`relay_switch`](relay_switch) | 继电器开关 | `write` + `changed` | 继电器 + 按键 | `switch` |
-| [`dimmable_light`](dimmable_light) | 色温灯 | `write` + `identify` | 无（stub） | `light` |
+| [`dimmable_light`](dimmable_light) | 色温灯 | `write` + `identify` | WS2812 灯带 | `light` |
 | [`smart_plug`](smart_plug) | 计量插座 | `write` + `read` | 继电器 + 按键 | `switch` + 2 个 `sensor` |
-| [`th_sensor`](th_sensor) | 温湿度 | 只有 `read` | DHT22 | 2 个 `sensor` |
-| [`contact_sensor`](contact_sensor) | 门磁 | `read` + 中断推送 | 干簧管 | `binary_sensor` |
+| [`th_sensor`](th_sensor) | 温湿度 | 只有 `read` | AHT20 | 2 个 `sensor` |
+| [`contact_sensor`](contact_sensor) | 门磁 | `read` + 边沿推送 | 干簧管 | `binary_sensor` |
 | [`scene_switch`](scene_switch) | 无线按键 / 场景开关 | 一个都没有 | 按键 | `event` |
-| [`occupancy_sensor`](occupancy_sensor) | 人在 + 照度 | `read` + `en2m_schedule` | 无（stub） | `binary_sensor` + `sensor` |
+| [`occupancy_sensor`](occupancy_sensor) | 人在 + 照度 | `read` + `en2m_schedule` | PIR + BH1750 | `binary_sensor` + `sensor` |
 | [`fan_controller`](fan_controller) | 风扇 | 按 cluster 注册的 `write` | 无（stub） | `fan` |
 | [`window_cover`](window_cover) | 窗帘 / 卷帘 | 只有 `command` | 无（stub） | `cover` |
 | [`door_lock`](door_lock) | 门锁 | 只有 `write` | 无（stub） | `lock` |
@@ -29,6 +32,38 @@
 
 "stub" 的意思是这个示例把执行器写成了几行 `ESP_LOGI`，
 方便你**先把链路跑通再接硬件**。每个 README 的"换成真硬件"一节告诉你要改哪几行。
+
+前七个示例接的是真外设，后面四个（风扇、窗帘、门锁、温控器）是 stub —— 
+不是偷懒，是这四类的执行器差异太大（步进电机、舵机、电磁锁、继电器 + PID），
+写死任何一种都不如留一个明确的"在这里接你的硬件"位置。
+
+### 外设组件
+
+| 外设 | 组件 | 版本 | 用在哪 |
+|---|---|---|---|
+| WS2812 / SK6812 灯带 | [`espressif/led_strip`](https://components.espressif.com/components/espressif/led_strip) | `^3.0.3` | `dimmable_light` |
+| 按键（单击/双击/长按/释放） | [`espressif/button`](https://components.espressif.com/components/espressif/button) | `^4.2.1` | `relay_switch`、`smart_plug`、`scene_switch` |
+| 干簧管 / 门磁 | 同上 | `^4.2.1` | `contact_sensor` |
+| PIR 人体感应 | 同上 | `^4.2.1` | `occupancy_sensor` |
+| AHT20 温湿度 | [`espressif/aht20`](https://components.espressif.com/components/espressif/aht20) | `^2.0.0` | `th_sensor` |
+| BH1750 照度 | [`espressif/bh1750`](https://components.espressif.com/components/espressif/bh1750) | `^2.0.0` | `occupancy_sensor` |
+| 继电器 | ESP-IDF 内置 `driver`（一路 GPIO 输出） | — | `relay_switch`、`smart_plug` |
+
+几件值得先知道的事：
+
+- **干簧管、PIR 和按键用的是同一个组件。** 这三样在电路上是同一种东西：
+  一根线，两个电平。`espressif/button` 已经替你做好消抖和手势识别，
+  再写一遍 GPIO 中断没有意义。
+- **继电器没有组件**，因为没有东西可抽象：一个引脚，一个电平，
+  `gpio_set_level()` 就是全部。注册表里没有它不是遗漏。
+- **注册表里没有 DHT11/DHT22 组件**，所以 `th_sensor` 用的是 AHT20。
+  AHT20 是 DHT22 的现代 I²C 替代品：同样的量程和精度，
+  不需要自己掐单总线时序，而且驱动由乐鑫维护。
+- **AHT20 和 BH1750 用的是两套 I²C 驱动**：`aht20` 走
+  [`espressif/i2c_bus`](https://components.espressif.com/components/espressif/i2c_bus)
+  封装，`bh1750` 直接用 IDF 5.x 的 `driver/i2c_master.h`。
+  两者不能共用一个 port 句柄。这两个示例各自独立，所以不冲突，
+  但你要是想把它们合到一块板上，得先把其中一个换掉。
 
 **十一个示例里没有一个 `while (1)`。** 这是这套库的设计目标：
 应用代码只写回调，任务归组件。
@@ -148,11 +183,15 @@ examples/relay_switch/
 ├── sdkconfig.defaults      # 目标芯片、flash、控制台
 ├── README.md
 └── main/
-    ├── CMakeLists.txt      # 组件注册，列出用到的 drivers/*.c
+    ├── CMakeLists.txt      # 组件注册
+    ├── idf_component.yml   # 要从注册表拉哪些外设组件
     └── main.c              # 全部应用代码
 ```
 
 要新建一个自己的设备，**直接 `cp -r` 一个最像的示例**，改 `project()` 名字和 `main.c` 就行。
+要换外设就改 `main/idf_component.yml`：在
+[components.espressif.com](https://components.espressif.com) 上找到组件，
+把它的名字和版本写进 `dependencies`，下次 `idf.py build` 自动下载。
 
 ---
 

@@ -4,8 +4,11 @@
 
 - ESP-IDF 组件 **`en2m`**：mesh + Matter 风格 Endpoint/Cluster/Attribute，**回调驱动，自带任务**
 - **`examples/*`**：开关、灯、风扇、窗帘、锁、温控、场景开关、传感等 11 个示例（仓库根目录）
-- **`drivers/`**：参考驱动（GPIO / 按键 / 门磁 / DHT），**不属于** `en2m`
 - **`firmware/router`**：常电转发节点
+
+示例里的**外设驱动一律来自 [ESP 组件注册表](https://components.espressif.com)**
+（`espressif/led_strip`、`espressif/button`、`espressif/aht20`、`espressif/bh1750`），
+本仓库不自带手写驱动。
 
 S3 主机（协调器 + Bridge）在：**[espnow2mqtt-host](https://github.com/SFNFIH/espnow2mqtt-host)**  
 HA 插件在：**[espnow2mqtt-ha](https://github.com/SFNFIH/espnow2mqtt-ha)**  
@@ -21,7 +24,7 @@ HA 插件在：**[espnow2mqtt-ha](https://github.com/SFNFIH/espnow2mqtt-ha)**
 
 | 层 | 在哪 |
 |----|------|
-| 驱动（GPIO/I2C/DHT/PWM…） | 你的 `app_main` / `drivers/` |
+| 驱动（GPIO / I²C / RMT / PWM…） | 你的 `app_main` + 注册表组件 |
 | 交互（Endpoint / Cluster / Attribute / 命令 / 上报） | `components/en2m` → `en2m_model` |
 | 传输（ESP-NOW 树、重传） | `components/en2m` → `en2m_mesh` |
 
@@ -203,7 +206,6 @@ idf.py build flash
 ```
 components/en2m/              # 核心组件（库）
 examples/                     # 11 个示例工程，每个目录里有自己的 README
-drivers/                      # 参考驱动
 firmware/router/              # 常电路由
 docs/
 protocol/PROTOCOL.md

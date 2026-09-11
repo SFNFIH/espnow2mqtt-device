@@ -24,7 +24,9 @@
 
 #define PIN_BUTTON GPIO_NUM_9
 #define BUTTON_ACTIVE_LEVEL 0
-#define SHORT_PRESS_MS 200
+/* How long the component waits after a release for another press before it
+ * declares a single click. Also the maximum gap inside a double click. */
+#define CLICK_GAP_MS 300
 #define LONG_PRESS_MS 800
 #define ENDPOINT 1
 
@@ -58,7 +60,7 @@ static esp_err_t button_init(void)
     };
     const button_config_t btn_cfg = {
         .long_press_time = LONG_PRESS_MS,
-        .short_press_time = SHORT_PRESS_MS,
+        .short_press_time = CLICK_GAP_MS,
     };
     const button_gpio_config_t gpio_cfg = {
         .gpio_num = PIN_BUTTON,

@@ -11,8 +11,8 @@
 |---|---|
 | Cluster | Switch (`0x003B`) |
 | 设备类型 | `EN2M_DEVICE_TYPE_GENERIC_SWITCH` |
-| 回调 | **没有**（只有驱动的手势回调） |
-| 驱动 | `drv_gpio_button_gesture` |
+| 回调 | **没有**（只有按键组件的手势回调） |
+| 外设组件 | [`espressif/button`](https://components.espressif.com/components/espressif/button) `^4.2.1` |
 | 上报模式 | `EN2M_REPORT_ON_CHANGE_ONLY` |
 | 默认名 / slug | `switch1` |
 | HA 实体 | `event.switch1_button` |
@@ -26,11 +26,14 @@
 | **9** | 按键到 GND | 多数 C3 开发板上就是 **BOOT 键**，不用外接 |
 
 ```c
-#define BUTTON_ACTIVE_LOW true      // 按下拉到 GND
-#define DEBOUNCE_MS 30              // 消抖窗口
+#define BUTTON_ACTIVE_LEVEL 0       // 按下拉到 GND
+#define CLICK_GAP_MS 300            // 松手后等多久才确定"没有下一击"
 #define LONG_PRESS_MS 800           // 按住多久算长按
-#define DOUBLE_GAP_MS 300           // 两次按间隔小于这个算双击
 ```
+
+消抖不在这里配，它是 `espressif/button` 的全局配置项
+（`menuconfig` → `Component config` → `Button` → `BUTTON_PERIOD_TIME_MS`，
+默认 5 ms 轮询、连续两次同电平才认，约 10 ms 窗口）。
 
 不接任何东西就能测：按板载 BOOT 键。
 
@@ -46,6 +49,9 @@ cd examples/scene_switch
 idf.py set-target esp32c3
 idf.py build flash monitor -p /dev/ttyACM0
 ```
+
+第一次 `build` 会联网把 `espressif/button` 下载到本工程的
+`managed_components/`。
 
 ---
 
@@ -144,37 +150,105 @@ en2m_report_button(ENDPOINT, action);
 
 ---
 
-## 手势识别在驱动里，不在应用里
+## 手势识别在组件里，不在应用里
 
-`main.c` 里的 `on_gesture()` 只做一件事：把驱动的手势枚举翻译成
-`en2m_press_action_t`，然后调 `en2m_report_button()`。
-短按 / 双击 / 长按的**状态机在 `drivers/drv_gpio_button_gesture.c` 里**。
+四种手势——单击、双击、长按、释放——**全部由 `espressif/button` 原生提供**，
+应用侧只是把它的事件映射到 `en2m_press_action_t`：
 
-那个驱动的分工是：
+```c
+static const struct {
+    button_event_t event;
+    en2m_press_action_t action;
+} map[] = {
+    {BUTTON_SINGLE_CLICK,     EN2M_PRESS_SHORT},
+    {BUTTON_DOUBLE_CLICK,     EN2M_PRESS_DOUBLE},
+    {BUTTON_LONG_PRESS_START, EN2M_PRESS_LONG},
+    {BUTTON_LONG_PRESS_UP,    EN2M_PRESS_RELEASE},
+};
 
-- **ISR** 只消抖 + 把边沿塞进队列（而且是**回读电平**，不靠记极性——
-  漏一个边沿也能自动纠正）
-- **一个任务**（`btn_gesture`，2560 字节栈）跑状态机，
-  用队列接收的**超时当作时钟**，所以不需要额外的定时器
-
-状态机：
-
-```
-IDLE        --按下-->   PRESSED      (等 long_ms)
-PRESSED     --松开-->   WAIT_DOUBLE  (等 double_gap_ms)
-PRESSED     --超时-->   发 LONG,  LONG_HELD
-WAIT_DOUBLE --按下-->   发 DOUBLE, CONSUMED
-WAIT_DOUBLE --超时-->   发 SHORT,  IDLE
-LONG_HELD   --松开-->   发 RELEASE, IDLE
-CONSUMED    --松开-->   IDLE
+for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+    iot_button_register_cb(btn, map[i].event, NULL, on_press,
+                           (void *)(uintptr_t)map[i].action);
+}
 ```
 
-**短按有 `DOUBLE_GAP_MS`（300 ms）的固有延迟**，这是双击检测的代价：
-不等 300 ms 就没法知道后面还有没有第二下。不需要双击的话把
-`double_gap_ms` 传 0，短按就变成即时的。
+**一个回调服务四个事件**，因为要发什么 action 是通过 `usr_data`
+传进来的，回调里不用 `switch`：
 
-**这是整个仓库里唯一一个用到任务的示例，而那个任务在驱动里，
-应用代码里还是一行任务都没有。**
+```c
+static void on_press(void *button_handle, void *usr_data)
+{
+    en2m_schedule(report_press, usr_data);
+}
+```
+
+`usr_data` 原封不动地传给 `en2m_schedule()` 的 `arg`，
+所以整条链路上一个分支都没有。
+
+### 为什么要经过 `en2m_schedule`
+
+`en2m_report_button()` 内部是"读计数 → 写 action → 写计数 +1"，
+**三步不是原子的**。全部收拢到 en2m 任务上执行，计数就不可能被撕裂。
+
+而且 `espressif/button` 的回调跑在一个**全固件共用的 esp_timer** 上，
+在那里面等锁、等发包会连带卡住同一块板上其它按键的消抖。
+回调里只派活、不干活。
+
+### 手势时间参数
+
+```c
+const button_config_t btn_cfg = {
+    .long_press_time = LONG_PRESS_MS,  // 800 ms
+    .short_press_time = CLICK_GAP_MS,  // 300 ms
+};
+```
+
+留空（`{0}`）的话组件用自己的默认值（长按 1500 ms、`short_press_time` 180 ms）。
+这个示例把长按调到 800 ms，因为 1.5 秒对场景开关来说手感偏迟钝。
+
+**`short_press_time` 这个名字有点误导**：它不是"按多短算短按"，
+而是**松手之后等待下一击的窗口**。看状态机就清楚了
+（`iot_button.c` 的 `PRESS_REPEAT_DOWN_CHECK`）：
+
+```
+按下 ──> PRESS_DOWN
+松开 ──> PRESS_UP，开始计时
+          ├─ 在 short_press_time 内又按下  ──> repeat++，继续等
+          └─ 超过 short_press_time 没动作  ──> 按 repeat 发
+                                               1 次 = SINGLE_CLICK
+                                               2 次 = DOUBLE_CLICK
+```
+
+所以这个值同时决定两件事：
+
+1. **双击能有多慢**。两击之间超过 300 ms 就变成两次单击。
+   默认的 180 ms 对不少人来说偏紧，所以这里放宽到 300 ms。
+2. **单击有多慢**。组件必须等满这个窗口才能确定"后面没有第二下了"，
+   所以**单击必然延迟 300 ms**。这是双击检测的固有代价，不是 bug。
+
+不需要双击的话就别注册 `BUTTON_DOUBLE_CLICK` ——
+不过要注意组件**照样会等**那个窗口（状态机是一样的），
+真要即时响应得改用 `BUTTON_PRESS_DOWN`，在按下的瞬间就发。
+`relay_switch` 里的本地按键如果嫌慢，就是这么改。
+
+**还有一个容易踩的**：双击的**第二下**如果按住超过 `short_press_time`，
+状态机会走到 `PRESS_END` 而不发 `DOUBLE_CLICK`。
+也就是说"快按一下、再按住"这个动作什么都不会发。
+长按要单独用 `BUTTON_LONG_PRESS_START`，别指望它和连击混着用。
+
+### 还有别的事件可用
+
+`iot_button.h` 里一共 11 种事件，这个示例只用了 4 种。另外几种里有用的：
+
+| 事件 | 什么时候来 | 能做什么 |
+|---|---|---|
+| `BUTTON_LONG_PRESS_HOLD` | 长按期间**反复**触发 | 长按调亮度（一直加） |
+| `BUTTON_MULTIPLE_CLICK` | 指定次数的连击 | 五连击进配网模式 |
+| `BUTTON_PRESS_REPEAT` | 每次连击都来，带次数 | 自己数几连击 |
+
+**这个仓库里唯一一个用到任务的示例，现在连那个任务也没有了**——
+手势状态机跑在 `espressif/button` 和全固件共用的那个 esp_timer 上，
+不再是每个按键一个 2560 字节栈的任务。
 
 ---
 
@@ -232,23 +306,29 @@ automation:
 
 ```c
 #define EP_BTN1 1
-#define EP_BTN2 2
-#define EP_BTN3 3
-#define EP_BTN4 4
+static const int pins[4] = {2, 3, 9, 10};
 
-static void on_gesture_ep(drv_gpio_button_gesture_t gesture, void *ctx)
+/* usr_data 里同时塞 endpoint 和 action */
+#define PACK(ep, action) ((void *)(uintptr_t)(((ep) << 8) | (action)))
+
+static void report_press(void *arg)
 {
-    uint8_t ep = (uint8_t)(uintptr_t)ctx;      // ← ctx 带着 endpoint 号
-    en2m_report_button(ep, translate(gesture));
+    uintptr_t packed = (uintptr_t)arg;
+    en2m_report_button((uint8_t)(packed >> 8), (en2m_press_action_t)(packed & 0xFF));
 }
 
 void app_main(void)
 {
     for (int i = 0; i < 4; i++) {
-        en2m_endpoint_create_device(EP_BTN1 + i, EN2M_DEVICE_TYPE_GENERIC_SWITCH);
-        drv_gpio_button_gesture_init(pins[i], true, DEBOUNCE_MS, LONG_PRESS_MS,
-                                     DOUBLE_GAP_MS, on_gesture_ep,
-                                     (void *)(uintptr_t)(EP_BTN1 + i));
+        uint8_t ep = EP_BTN1 + i;
+        button_handle_t btn = NULL;
+        const button_gpio_config_t gpio_cfg = {.gpio_num = pins[i], .active_level = 0};
+
+        en2m_endpoint_create_device(ep, EN2M_DEVICE_TYPE_GENERIC_SWITCH);
+        iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, &btn);
+        iot_button_register_cb(btn, BUTTON_SINGLE_CLICK, NULL, on_press,
+                               PACK(ep, EN2M_PRESS_SHORT));
+        /* ……其余三个事件同理 */
     }
     ...
 }
@@ -257,9 +337,12 @@ void app_main(void)
 **默认最多 4 个 endpoint**（`CONFIG_EN2M_MAX_ENDPOINTS`），
 六键的话要调这个配置，见 [docs/kconfig.md](../../docs/kconfig.md)。
 
-注意每个 `drv_gpio_button_gesture_init()` 会起**一个自己的任务**，
-四个按键就是四个 2560 字节的栈（约 10 KB）。
-按键多了应该改成一个任务轮询所有按键——这时候直接改驱动更划算。
+**多按键的开销几乎是零。** `espressif/button` 的所有实例
+**共用同一个 esp_timer**，四个按键不是四个任务、四个定时器，
+就是同一个 5 ms 回调里多扫三个引脚。
+这也是为什么按键回调里绝对不能阻塞：卡住一个就卡住全部。
+
+（按键实例挂在一个链表上，数量没有上限，只受内存限制。）
 
 ---
 
@@ -269,10 +352,12 @@ void app_main(void)
 |---|---|
 | 普通轻触开关 | 什么都不用改 |
 | 自锁 / 船型开关 | 手势识别没意义了，改成 [`contact_sensor`](../contact_sensor) 那种电平上报 |
-| 触摸按键（TTP223） | 一样接 GPIO，但消抖可以调小（芯片已经处理过） |
+| 触摸按键（TTP223） | 一样接 GPIO，输出是高有效，把 `BUTTON_ACTIVE_LEVEL` 改成 `1` |
 | 电容触摸（C3 无触摸外设） | C3 没有触摸控制器，要用外部芯片 |
 
-**电池版还要加深睡**：`esp_deep_sleep_enable_gpio_wakeup()` 让按键把芯片唤醒，
+**电池版还要加深睡**：`espressif/button` 自己有省电模式
+（`button_gpio_config_t.enable_power_save`），空闲时停掉轮询定时器、
+改用电平中断唤醒，配合 `esp_deep_sleep_enable_gpio_wakeup()` 让按键把芯片唤醒，
 然后 `en2m_start()` → 上报 → 回去睡。
 注意入网要几十到几百毫秒，所以按下到 HA 里响应会有这个延迟。
 追求手感就别深睡，用 light sleep。
@@ -283,10 +368,12 @@ void app_main(void)
 
 | 现象 | 原因 |
 |---|---|
-| 一按出来好几条上报 | 按键抖动，加大 `DEBOUNCE_MS` |
-| 短按总是被识别成双击 | `DOUBLE_GAP_MS` 太大，或者按键在松手时抖动 |
+| 一按出来好几条上报 | 按键抖动，`menuconfig` 里加大 `BUTTON_PERIOD_TIME_MS` |
+| 短按总是被识别成双击 | 按键在松手时抖动，同上 |
 | 长按识别不出来 | `LONG_PRESS_MS` 比你实际按的时间长 |
-| 短按感觉慢半拍 | 正常，那是 `DOUBLE_GAP_MS`。不要双击就设 0 |
+| 单击慢半拍 | 正常，组件在等 `CLICK_GAP_MS`（300 ms）。调小或者改用 `BUTTON_PRESS_DOWN` |
+| 双击老是被当成两次单击 | 两击间隔超了 `CLICK_GAP_MS`，往上调 |
+| "点一下再按住"什么都不发 | 状态机的已知行为，见上面手势时间参数那一节 |
 | HA 重启后自动化被触发一次 | **不该发生**。如果发生了，说明计数器没持久化，检查 NVS 分区 |
 | HA 里没有 `event` 实体 | 新设备在第一次按键之前不声明 `button` cap，按一下就有了；还没有的话是集成版本太老，`event` 平台需要 0.4.0 及以上 |
 

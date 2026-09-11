@@ -44,6 +44,10 @@ idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
 ```
 
+第一次 `build` 会联网把 `espressif/button` 下载到本工程的
+`managed_components/`，依赖写在
+[`main/idf_component.yml`](main/idf_component.yml) 里。
+
 信道要和协调器一致，改法见 [examples/README.md](../README.md#通用编译流程)。
 
 ---
@@ -122,6 +126,23 @@ static void on_button(void *button_handle, void *usr_data)
 （如果你换成自己写的 GPIO 中断，那就必须用 `en2m_schedule_from_isr()`，
 并且记得处理 `higher_prio_task_woken`。）
 
+### 按下到继电器动作有 ~180 ms 延迟
+
+这里注册的是 `BUTTON_SINGLE_CLICK`，而组件要等
+`short_press_time`（默认 180 ms）过去、确认没有第二击，才会发这个事件。
+所以按下去到继电器吸合大约有 180 ms 的延迟。
+
+嫌慢就改成在按下的瞬间就动：
+
+```c
+iot_button_register_cb(btn, BUTTON_PRESS_DOWN, NULL, on_button, NULL);
+```
+
+代价是以后没法再区分单击和双击了（按下就翻转，双击等于翻两次）。
+墙面开关用 `PRESS_DOWN` 手感更好，场景开关要手势就用
+`SINGLE_CLICK`。这一段的完整解释见
+[`scene_switch` 的手势时间参数](../scene_switch/README.md#手势时间参数)。
+
 ---
 
 ## 持久化是白拿的
@@ -169,6 +190,7 @@ en2m_endpoint_create_device(2, EN2M_DEVICE_TYPE_ON_OFF_PLUG);
 | HA 里点了没反应，串口也没日志 | `base_topic` 两边不一致 |
 | 一按键就重启 | 供电不够，继电器线圈拉垮了电源。见 [docs/wiring.md](../../docs/wiring.md#供电) |
 | 按一次跳两下 | 消抖不够。`idf.py menuconfig` → `Component config` → `Button` 里把 `BUTTON_PERIOD_TIME_MS` 调大 |
+| 按下到吸合慢半拍 | 正常，`SINGLE_CLICK` 要等 180 ms。见上面那一节 |
 | 按键完全没反应 | 按键默认低电平有效（`BUTTON_ACTIVE_LEVEL 0`）。上拉到 VCC 的按键要改成 `1` |
 
 ---

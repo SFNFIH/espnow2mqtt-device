@@ -9,7 +9,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
-#include "../../drivers/drv_gpio_relay.h"
+#include "../../../drivers/drv_gpio_relay.h"
 
 #ifndef PIN_BUTTON
 #define PIN_BUTTON GPIO_NUM_9

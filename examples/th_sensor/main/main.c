@@ -8,7 +8,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
-#include "../../drivers/drv_dht.h"
+#include "../../../drivers/drv_dht.h"
 
 static const char *TAG = "ex_th";
 

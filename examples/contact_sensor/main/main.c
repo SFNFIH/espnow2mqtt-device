@@ -7,7 +7,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
-#include "../../drivers/drv_gpio_contact.h"
+#include "../../../drivers/drv_gpio_contact.h"
 
 static const char *TAG = "ex_contact";
 static bool s_last_open;

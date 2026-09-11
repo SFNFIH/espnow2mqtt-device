@@ -117,11 +117,36 @@ s_meter.last_sample_us = now;
 3. **单位在固件里用整数**（mW、mWh），只在序列化的时候转成 W / kWh。
    浮点在 C3 上没有硬件支持，而且累加浮点会积累误差。
 
-**这个示例的 `energy` 不持久化，重启归零。** HA 的能量面板要求
-`state_class: total_increasing`，归零它能容忍（识别为"表被换了"），
-但你会丢掉历史。真产品应该定期把 `energy_mwh` 存进 NVS——
-注意 NVS 有擦写寿命，别每 15 秒存一次，见
-[docs/persistence.md](../../docs/persistence.md)。
+### 这个示例的 `energy` 重启会归零，但原因不是"没持久化"
+
+`EN2M_ATTR_ENERGY_MWH` 这个属性**是持久化的**，重启之后 `en2m_start()`
+会把上次的值从 NVS 读回数据模型。
+
+**但这个示例还是从 0 开始数。** 因为累计值实际存在应用自己的
+`s_meter.energy_mwh` 里，那是一个静态变量，开机就是 0；
+而 `on_read()` 每次都用它覆盖数据模型里的值。**读回调赢了持久化。**
+
+这是一个很容易踩的坑：**只要某个属性有读回调，持久化就只是个摆设**——
+回调返回什么就是什么。要让累计值真的接上，得在 `en2m_start()`
+之后把持久化的值读回来当种子：
+
+```c
+ESP_ERROR_CHECK(en2m_start(&cfg));
+
+en2m_value_t stored;
+if (en2m_attribute_get(ENDPOINT, EN2M_CLUSTER_ELECTRICAL_POWER,
+                       EN2M_ATTR_ENERGY_MWH, &stored) == ESP_OK) {
+    s_meter.energy_mwh = en2m_value_as_int(&stored);
+}
+```
+
+（必须在 `en2m_start()` **之后**，那之前 NVS 还没回放。）
+
+HA 的能量面板用的是 `state_class: total_increasing`，归零它能容忍
+（识别成"表被换了"），但你会丢掉历史曲线。
+NVS 的刷盘时机和擦写寿命见
+[docs/persistence.md](../../docs/persistence.md)——
+别指望它能扛住每 15 秒写一次。
 
 ---
 

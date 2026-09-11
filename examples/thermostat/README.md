@@ -45,9 +45,13 @@ idf.py build flash monitor -p /dev/ttyACM0
 
 ```
 espnow2mqtt/thermo1/availability online
-espnow2mqtt/thermo1/state  {"hvac_mode":"heat","current_temperature":22.0,
+espnow2mqtt/thermo1/state  {"hvac_mode":"off","current_temperature":22.0,
                             "target_temperature":21.0,"caps":["climate"],"hop":1}
 ```
+
+第一次上电 `hvac_mode` 是 `off`，因为 `EN2M_ATTR_SYSTEM_MODE` 的默认值是
+`EN2M_THERMOSTAT_OFF`。`target_temperature` 是 21.0，
+来自制热设定点的默认值 2100（厘度）。
 
 串口上能看到闭环：
 
@@ -273,10 +277,39 @@ OpenTherm 能让你控制**出水温度**而不是只能开 / 关，效率高得
 | 继电器疯狂开关 | 没有回差，或者回差太小。见上文 |
 | 压缩机报故障 / 保护 | 缺最短运行 / 停机时间 |
 | 切模式后目标温度跳了 | **正常**，两个设定点是分开存的 |
+| 刚上电 HA 里显示 `off`，但串口上继电器已经在动 | 见下面一段 |
 | 室温一直偏高 | 传感器贴着芯片，自热。把传感器引出去 |
 | 重启后设定点回到 21 / 24 | NVS 分区问题，见 [docs/persistence.md](../../docs/persistence.md) |
 | HA 里模式下拉只有五项 | **故意的**。集成只暴露固件能解析的那五个，多给会让 HA 发出一个固件默默当成 `off` 的模式 |
 | `on_changed` 里死循环 / 栈溢出 | 在 `changed` 里又写了同一个属性 |
+
+### 最后那条值得展开：本地状态和数据模型要对齐
+
+示例里的 `s_hvac` 是**应用自己的静态变量**，它的初值写死成
+`.mode = EN2M_THERMOSTAT_HEAT, .heating_centi = 2100, .cooling_centi = 2400`。
+而数据模型那边 `SYSTEM_MODE` 的默认值是 `EN2M_THERMOSTAT_OFF`。
+
+**两边不一致**：HA 里看到的是 `off`，但 `hvac_control()` 用的是
+`s_hvac.mode == HEAT`，所以继电器真的会动。只要你在 HA 里设一次模式，
+`on_write()` 就会把两边对齐，之后一切正常。
+
+这个初值在示例里是为了"烧进去就能看到闭环在跑"。
+**真产品应该在 `en2m_start()` 之后把恢复出来的值读回本地**：
+
+```c
+ESP_ERROR_CHECK(en2m_start(&cfg));
+
+en2m_value_t v;
+if (en2m_attribute_get(ENDPOINT, EN2M_CLUSTER_THERMOSTAT,
+                       EN2M_ATTR_SYSTEM_MODE, &v) == ESP_OK) {
+    s_hvac.mode = (en2m_thermostat_mode_t)en2m_value_as_int(&v);
+}
+/* 两个设定点同理 */
+hvac_control();
+```
+
+模式和两个设定点都是**持久化属性**，所以这么读回来拿到的是断电前用户设的值，
+不是默认值。
 
 ---
 

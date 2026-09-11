@@ -44,11 +44,12 @@ idf.py build flash monitor -p /dev/ttyACM0
 
 ```
 espnow2mqtt/occ1/availability online
-espnow2mqtt/occ1/state          {"occupancy":"ON","illuminance":480,
+espnow2mqtt/occ1/state          {"occupancy":"OFF","illuminance":80,
                                  "caps":["occupancy","illuminance"],"hop":1}
 ```
 
-每 15 秒 `occupancy` 在 `ON` / `OFF` 之间翻一次，`illuminance` 跟着在 480 / 80 之间跳。
+第一条是 `OFF` / 80，然后每 15 秒 `occupancy` 在 `ON` / `OFF` 之间翻一次，
+`illuminance` 跟着在 480 / 80 之间跳。
 照度单位 **lux**，是整数（HA 那边显示精度 0 位）。
 
 ---

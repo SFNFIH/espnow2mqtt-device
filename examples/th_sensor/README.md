@@ -142,7 +142,8 @@ en2m_endpoint_add_device_type(ep, EN2M_DEVICE_TYPE_PRESSURE_SENSOR);
 ```
 
 然后在 `on_read()` 里加一个 `case EN2M_CLUSTER_PRESSURE_MEASUREMENT`。
-每个 endpoint 默认最多 6 个 cluster，见 [docs/kconfig.md](../../docs/kconfig.md)。
+每个 endpoint 默认最多 8 个 cluster、每个 cluster 最多 6 个属性，
+上限见 [docs/kconfig.md](../../docs/kconfig.md)。
 
 ---
 

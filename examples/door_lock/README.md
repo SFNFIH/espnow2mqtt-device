@@ -40,8 +40,11 @@ idf.py build flash monitor -p /dev/ttyACM0
 
 ```
 espnow2mqtt/lock1/availability online
-espnow2mqtt/lock1/state         {"lock":"UNLOCKED","caps":["lock"],"hop":1}
+espnow2mqtt/lock1/state         {"lock":"LOCKED","caps":["lock"],"hop":1}
 ```
+
+第一次上电是 `LOCKED`，因为 `EN2M_ATTR_LOCK_STATE` 的默认值是
+`EN2M_LOCK_LOCKED`——**门锁的安全默认值应该是锁着**。
 
 手动控制：
 
@@ -111,17 +114,25 @@ void app_main(void)
 
 | 持久化 | 不持久化 |
 |---|---|
-| OnOff 的开关状态 | 温度、湿度等测量值 |
-| Level 的亮度、ColorControl 的色温 | 功率、电量 |
-| DoorLock 的锁状态 | 门磁、人在 |
-| Thermostat 的模式和设定点 | Thermostat 的实测温度 |
-| Switch 的按键计数 | — |
+| OnOff 的开关状态 | 温度、湿度、气压、照度 |
+| Level 的亮度、ColorControl 的色温 | 瞬时功率 |
+| DoorLock 的锁状态 | 门磁、人在、烟感 |
+| WindowCovering 的位置 | Thermostat 的实测温度 |
+| Thermostat 的模式和两个设定点 | Switch 的最后一次按键种类 |
+| FanControl 的模式和百分比 | — |
+| 累计电量、Switch 的按键计数 | — |
 
 判断标准很简单：**这个值是"别人告诉我的"还是"我测出来的"**。
 前者要存（重启后没人会再告诉你一遍），后者不用（重启后再测一次就行）。
 
-按键计数在这张表里是个特例，理由见
-[`scene_switch`](../scene_switch/README.md#计数器为什么要持久化)。
+最后一行是两个特例：累计电量丢了就永久缺一段历史，
+按键计数归零会被读成"又按了一次"（理由见
+[`scene_switch`](../scene_switch/README.md#计数器为什么要持久化)）。
+
+> **一个陷阱**：某个属性有读回调的话，持久化就形同虚设——
+> 每次上报都用回调返回的值覆盖掉恢复的值。
+> 累计电量和窗帘位置都会踩这个坑，处理办法见
+> [`smart_plug`](../smart_plug/README.md#这个示例的-energy-重启会归零但原因不是没持久化)。
 
 改某个属性的持久化标记见 [docs/persistence.md](../../docs/persistence.md)。
 
@@ -241,7 +252,7 @@ static void publish_bolt_state(void *arg)
 
 | 现象 | 原因 |
 |---|---|
-| 重启之后锁状态回到解锁 | NVS 分区表里没有 `nvs` 分区，或者被 `idf.py erase-flash` 清掉了 |
+| 重启之后锁状态回到默认的 `LOCKED` | 恢复失败了。NVS 分区表里没有 `nvs` 分区，或者被 `idf.py erase-flash` 清掉了 |
 | `on_write()` 里读出来的值是乱的 | 用了 `value->v.b` 而不是 `value->v.e8` |
 | 开锁时 C3 重启 | 线圈电流拉垮电源，见上文供电 |
 | 开锁之后 MOSFET 发烫 / 烧了 | 没加续流二极管 |

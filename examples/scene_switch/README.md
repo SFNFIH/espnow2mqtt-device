@@ -58,6 +58,16 @@ I (615)  ex_scene: ready — press, double press, or hold GPIO9
 I (8342) ex_scene: gesture 0
 ```
 
+MQTT——**按下第一个键之前，`state` 里什么都没有**：
+
+```
+espnow2mqtt/switch1/state  {"hop":1,"via":"..."}
+```
+
+这是故意的。序列化时只有 `button > 0` 才会报 `button` 和 `button_action`，
+所以计数还是 0 的新设备不会声明 `button` 这个 cap，
+**HA 里也就还没有实体**。按一下就出来了。
+
 MQTT——**按一下**：
 
 ```
@@ -278,7 +288,7 @@ void app_main(void)
 | 长按识别不出来 | `LONG_PRESS_MS` 比你实际按的时间长 |
 | 短按感觉慢半拍 | 正常，那是 `DOUBLE_GAP_MS`。不要双击就设 0 |
 | HA 重启后自动化被触发一次 | **不该发生**。如果发生了，说明计数器没持久化，检查 NVS 分区 |
-| HA 里没有 `event` 实体 | 集成版本太老，`event` 平台需要 0.4.0 及以上 |
+| HA 里没有 `event` 实体 | 新设备在第一次按键之前不声明 `button` cap，按一下就有了；还没有的话是集成版本太老，`event` 平台需要 0.4.0 及以上 |
 
 ---
 

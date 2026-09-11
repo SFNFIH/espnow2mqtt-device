@@ -215,6 +215,30 @@ static void motor_drive(int dir)
 
 超时保护最容易实现而且很有效，**至少要有这一个**。
 
+### 开机的位置从哪来
+
+`EN2M_ATTR_CURRENT_POSITION_LIFT_PERCENT` **是持久化属性**，
+所以 `en2m_start()` 会把上次的位置从 NVS 读回数据模型。
+
+但这个示例的 `s_cover.position` 是个静态变量，开机是 0，
+**它没去读那个值**，于是应用以为窗帘全开着。要接上就在
+`en2m_start()` 之后读一次：
+
+```c
+ESP_ERROR_CHECK(en2m_start(&cfg));
+
+en2m_value_t stored;
+if (en2m_attribute_get(ENDPOINT, EN2M_CLUSTER_WINDOW_COVERING,
+                       EN2M_ATTR_CURRENT_POSITION_LIFT_PERCENT, &stored) == ESP_OK) {
+    s_cover.position = (uint8_t)en2m_value_as_int(&stored);
+    s_cover.target = s_cover.position;
+}
+```
+
+**不过更稳的做法是开机往一个限位走一次重新校准。**
+持久化只能告诉你"断电前电机停在哪"，不能告诉你断电期间有没有人手动拉过。
+有限位开关的话校准是几秒钟的事，比信任 NVS 可靠。
+
 ---
 
 ## 常见坑
@@ -226,7 +250,7 @@ static void motor_drive(int dir)
 | 位置越走越不准 | 纯计时方案的固有问题，加限位开关 |
 | 行程中 HA 卡顿 / 丢位置 | 上报太密了，见"行程上报的限流" |
 | 电机来回抽搐 | H 桥两路同时有效，或者继电器互锁没做 |
-| 断电重启后位置是 0 但窗帘在一半 | 位置没持久化。可以把它设成 persisted，但更稳的是开机走到一个限位重新校准 |
+| 断电重启后位置是 0 但窗帘在一半 | 属性**是**持久化的，但示例的 `s_cover.position` 是个开机为 0 的静态变量，没去读回来。见下 |
 
 ---
 

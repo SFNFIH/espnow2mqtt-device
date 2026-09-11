@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "src/en2m_mac.c"
         "src/en2m_mesh.c"
+        "src/en2m_model.c"
     INCLUDE_DIRS
         "include"
     PRIV_INCLUDE_DIRS
@@ -13,4 +14,5 @@ idf_component_register(
         esp_event
         esp_netif
         esp_timer
+        json
 )

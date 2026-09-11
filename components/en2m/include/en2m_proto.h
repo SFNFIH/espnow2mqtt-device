@@ -17,7 +17,7 @@ extern "C" {
 
 #define EN2M_MAGIC   0xA5
 #define EN2M_VERSION 2
-#define EN2M_DATA_MAX 128
+#define EN2M_DATA_MAX 160
 
 /** Mesh node roles (selected at init time). */
 typedef enum {

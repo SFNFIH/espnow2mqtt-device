@@ -1,96 +1,79 @@
 # ESP-NOW 2 MQTT — Firmware (ESP-IDF)
 
-ESP-IDF 工程：用 **组件 `en2m`** 做 ESP-NOW Mesh，再烧到协调器 / 路由 / 终端设备。
+分层方式对齐 **ESP-Matter**：组件只管 **交互层**，驱动层由应用自己绑。
 
-> 不是另搞一套「SDK」。就是普通 ESP-IDF component，和 `esp_wifi`、`nvs_flash` 一样用。
-
-## 仓库里有什么
-
-| 路径 | 说明 |
-|------|------|
-| **`components/en2m`** | ESP-IDF **组件**（Mesh 协议与收发） |
-| `components/en2m_example_common` | 示例辅助（可选） |
-| `firmware/coordinator` | ESP32-S3 USB 协调器工程 |
-| `firmware/router` | 常电 Router 工程 |
-| `firmware/examples/*` | 温湿度 / 门磁 / 开关等示例工程 |
-
-## 在自己的工程里用 `en2m`
-
-任选一种（和别的 IDF 组件相同）：
-
-**1. 拷进工程**
-
-```text
-your_project/
-  components/
-    en2m/          ← 复制本仓库 components/en2m
-  main/
+```
+┌─────────────────────────────┐
+│  app_main + drivers/        │  ← GPIO / DHT / 电表 IC…（你自己的）
+└─────────────▲───────────────┘
+              │ driver ops (get/set)
+┌─────────────┴───────────────┐
+│  en2m model                 │  ← Endpoint / Cluster / Command（交互层）
+│  OnOff · Level · Temp · …   │
+└─────────────▲───────────────┘
+              │
+┌─────────────┴───────────────┐
+│  en2m mesh                  │  ← ESP-NOW 传输
+└─────────────────────────────┘
 ```
 
-`main/CMakeLists.txt`：
+## 组件 `en2m`
 
-```cmake
-idf_component_register(SRCS "main.c" REQUIRES en2m)
-```
+只提供：
 
-**2. EXTRA_COMPONENT_DIRS**
+- Mesh 传输（coordinator / router / leaf）
+- 数据模型：endpoint + cluster + 上报/命令
 
-```cmake
-set(EXTRA_COMPONENT_DIRS "/path/to/espnow2mqtt-firmware/components")
-```
+**不包含** 任何外设驱动。
 
-**3. Component Manager（`idf_component.yml`）**
-
-在工程 `main/idf_component.yml`（或根目录）：
-
-```yaml
-dependencies:
-  en2m:
-    git: https://github.com/SFNFIH/espnow2mqtt-firmware.git
-    path: components/en2m
-    version: main
-```
-
-然后：
-
-```bash
-idf.py reconfigure
-```
-
-`menuconfig` → **ESP-NOW Mesh (en2m)** 可调信道、跳数等。
-
-## 最小代码
+## 应用怎么写（类似 Matter 绑驱动）
 
 ```c
 #include "en2m.h"
 
+/* 你的驱动 */
+esp_err_t my_relay_set(bool on, void *ctx);
+esp_err_t my_relay_get(bool *on, void *ctx);
+
 void app_main(void)
 {
-    en2m_config_t config = {
-        .role = EN2M_ROLE_LEAF,
-        .name = "bedroom",
-        .model = "my-sensor",
-    };
-    ESP_ERROR_CHECK(en2m_mesh_init(&config));
-    while (1) {
-        en2m_mesh_loop();
+    en2m_endpoint_t *ep = en2m_endpoint_create(1);
+    en2m_endpoint_add_on_off(ep, &(en2m_on_off_driver_t){
+        .set = my_relay_set,
+        .get = my_relay_get,
+    });
+
+    en2m_config_t mesh = { .role = EN2M_ROLE_LEAF, .name = "relay1", .model = "my-sw" };
+    en2m_model_start(&mesh);
+    for (;;) {
+        en2m_model_loop();
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 ```
 
-## 编译本仓库示例
+已实现的 Cluster（Matter 风格子集）：
 
-```bash
-. $IDF_PATH/export.sh
-cd firmware/coordinator && idf.py set-target esp32s3 && idf.py build flash
-cd ../examples/th_sensor && idf.py set-target esp32c3 && idf.py build flash
-```
+| Cluster | 用途 |
+|---------|------|
+| OnOff | 开关 / 插座通断 |
+| Level Control | 亮度/风速等（API 已有，示例可扩） |
+| Boolean State | 门磁等 |
+| Temperature Measurement | 温度 |
+| Relative Humidity | 湿度 |
+| Electrical Power | 功率 / 电量 |
+
+## 仓库结构
+
+| 路径 | 说明 |
+|------|------|
+| `components/en2m` | 交互层 + 传输（IDF 组件） |
+| `firmware/drivers` | **参考驱动**（不属于 en2m） |
+| `firmware/examples/*` | 把参考驱动绑到 cluster 的示例 |
+| `firmware/coordinator` | USB 协调器 |
+| `firmware/router` | 纯转发 |
 
 ## 相关仓库
 
 - Bridge：https://github.com/SFNFIH/espnow2mqtt-bridge  
-- HA 集成：https://github.com/SFNFIH/espnow2mqtt-ha  
-- 总览：https://github.com/SFNFIH/espnow2mqtt  
-
-组件细节见 [`components/en2m/README.md`](components/en2m/README.md)。
+- HA：https://github.com/SFNFIH/espnow2mqtt-ha  

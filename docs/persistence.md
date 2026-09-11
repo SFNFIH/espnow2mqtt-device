@@ -255,20 +255,46 @@ write 回调返回非 `ESP_OK` 非 `ESP_ERR_NOT_SUPPORTED` 时：
 
 也就是这种情况下软硬件会不一致。所以 write 回调在恢复路径上应该尽量宽容。
 
-### 恢复时不会上报
+### 恢复时只有 write 回调被调，`changed` 不会
 
-`en2m_model_apply_persisted` 执行时 `s_model.started` **还是 false**，
-所以 `en2m_model_on_change` 里的这个判断为假：
+这一点值得说清楚，因为它是两层机制叠出来的结果。
+
+`en2m_dm_restore()` 已经**直接把值写进了槽位**。接着
+`en2m_model_apply_persisted()` 拿**同一个值**去调 `en2m_attribute_write`：
 
 ```c
-if (s_model.started && (report_mode == DEFAULT || report_mode == ON_CHANGE_ONLY)) {
-    en2m_report_schedule(0);
+/* en2m_attribute_write 内部 */
+cluster_cb(&path, &target, ...);          /* ← 无条件调，没有去重 */
+...
+return en2m_attribute_set(ep, cluster, attr, target);
+
+/* en2m_attribute_set 内部 */
+if (!en2m_value_equal(&slot->value, &committed)) {   /* ← 相等，所以整块被跳过 */
+    slot->value = committed;
+    changed = true;
+}
+if (changed) {
+    en2m_model_on_change(&path, &committed);         /* ← 不会走到这 */
 }
 ```
 
-不会产生一堆恢复期的上报。但 `attribute_changed` 回调**会**被调
-（它只要求 `configured`），所以如果你在 `attribute_changed` 里做本地控制，
-要注意它在启动期就会被触发。
+所以恢复期的行为是：
+
+| | 恢复时会发生吗 |
+|---|---|
+| `attribute_write` 回调 | **会**，每个 persist 属性一次。这正是硬件回位的机制 |
+| `attribute_changed` 回调 | **不会**，值没变，`en2m_model_on_change` 压根没被调用 |
+| `EN2M_EVENT_ATTRIBUTE_UPDATED` 事件 | **不会**，同上 |
+| 上报 | **不会**，同上 |
+| 写回 NVS | **不会**，`restore` 已经把 `persist_dirty` 清成 false |
+
+换句话说，恢复是**安静的**：只有你的驱动被驱动了一遍，模型层和空口上什么都没发生。
+所以不必担心"开机时 `attribute_changed` 里的本地控制逻辑被批量触发"。
+
+> 唯一的例外是你的 write 回调**自己**又调了 `en2m_attribute_set` 并且写了一个
+> 不同的值（比如驱动把亮度夹到了合法范围）。那时值真的变了，
+> `attribute_changed` 会被调用——但 `s_model.started` 此刻仍是 `false`，
+> 所以仍然不会产生上报。第一份上报统一由 `en2m_start` 排在 500 ms 之后。
 
 ## 6. 一个完整的例子
 

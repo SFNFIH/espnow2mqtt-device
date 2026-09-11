@@ -75,8 +75,10 @@ en2m_start(config)                                                    [app]
 │
 ├─ en2m_model_apply_persisted() 对每个 persist 属性调 en2m_attribute_write()
 │     → 走 write 回调 → 硬件恢复到断电前的状态
-│     注意此时 started 仍为 false，所以 on_change 里不会安排上报，
-│     但 attribute_changed 回调**会**被调用（它只要求 configured）
+│     注意：restore 已经把值塞进槽位了，所以紧接着的 en2m_attribute_set
+│     发现值没变，en2m_model_on_change 压根不会被调用——
+│     恢复期没有 attribute_changed、没有事件、没有上报
+│     详见 persistence.md
 │
 ├─ last_report_ms = now；last_persist_ms = now
 ├─ started = true

@@ -37,7 +37,7 @@ I (1843) en2m: parent=aa:bb:cc:dd:ee:ff cost=1 rssi=-42
 
 想不靠串口判断，把 12 个事件接上，`EN2M_EVENT_PARENT_FOUND` /
 `PARENT_LOST` / `RX_DROPPED` 三个就覆盖了大部分故障。
-代码见 [events.md](events.md#完整的诊断处理器)。
+代码见 [events.md](events.md#6-一个完整的诊断处理函数)。
 
 ---
 
@@ -171,7 +171,7 @@ E en2m_model: report exceeds 160 bytes; split the device across endpoints or tri
 
 出这条说明连三级降级都没救回来，报文没发出去。解决：减少 cluster，
 或者缩短 `cfg.mesh.name`（名字占 16 字节）。见
-[reporting.md](reporting.md#160-字节降级)。
+[reporting.md](reporting.md#7-160-字节与降级策略)。
 
 ### 3.2 endpoint 建失败了
 
@@ -238,7 +238,7 @@ mosquitto_sub -t 'homeassistant/#' -v        # 有没有 discovery
 en2m_report_now();      /* 注意：只在 en2m 任务上才是"立即发" */
 ```
 
-见 [reporting.md](reporting.md#去重与限流的区别)。
+见 [reporting.md](reporting.md#去重和限流的区别)。
 
 ### 4.2 读回调返回了 `ESP_ERR_NOT_SUPPORTED`
 
@@ -271,7 +271,7 @@ en2m_device_config_t cfg = {
 `switch (path->attribute_id)` 会张冠李戴：温度的读回调会被湿度的请求命中。
 
 **永远先 `switch (path->cluster_id)`。** 撞车清单见
-[data-model.md](data-model.md#属性-id-会撞车)。
+[data-model.md](data-model.md#注意-attribute-id-会重名)。
 
 ### 4.5 上报被 `min_report_interval_ms` 限流
 
@@ -279,7 +279,7 @@ en2m_device_config_t cfg = {
 中间的过程会被跳过。这对滑动亮度条是好事，对"我要看每一次脉冲"是坏事。
 
 想更快就调小（50、100）；但想清楚空口负载。见
-[reporting.md](reporting.md#min_report_interval_ms)。
+[reporting.md](reporting.md#min_report_interval_ms--变化上报的地板)。
 
 ### 4.6 上报模式选错了
 
@@ -298,7 +298,7 @@ en2m_device_config_t cfg = {
 endpoint。所以"endpoint 1 和 2 各挂一个 OnOff"在 HA 里只会出现一个开关。
 
 多外设请用**多 cluster**（`en2m_cluster_set_write_cb`），不要用多 endpoint。
-见 [data-model.md](data-model.md#多-endpoint-的限制)。
+见 [data-model.md](data-model.md#什么时候需要多个-endpoint)。
 
 ---
 
@@ -354,7 +354,7 @@ HA 里的表现是点了没反应、可能转一会儿圈。原因：
 
 | 原因 | 修 |
 |---|---|
-| 设备刚重启换了父节点，协调器手里的路由是旧的 | 等 `EN2M_ROUTE_STALE_MS`（默认 **120 秒**）过期，或者把它调到 30–60 s。这是个真实的坑，见 [mesh.md](mesh.md#配网与重连) |
+| 设备刚重启换了父节点，协调器手里的路由是旧的 | 等 `EN2M_ROUTE_STALE_MS`（默认 **120 秒**）过期，或者把它调到 30–60 s。这是个真实的坑，见 [mesh.md](mesh.md#离线超过-2-分钟的设备回来会怎样) |
 | 链路太差，4 次都丢了 | 调大 `CONFIG_EN2M_CMD_RETRIES` / `RETRY_MS`，或者加路由器 |
 | 设备侧 JSON 解析失败（见 5.2） | 修载荷格式 |
 | 设备还没 `en2m_start` 完 | 正常，重试会成功 |
@@ -424,7 +424,7 @@ en2m_attribute_write(ENDPOINT, EN2M_CLUSTER_ON_OFF, EN2M_ATTR_ON_OFF, en2m_bool(
 2. **`min_report_interval_ms` 不是"不限流"开关**，填 0 表示取默认 1000。
 3. **改采样频率就是改上报频率**，这是"组件持有时序"的直接后果。
 
-详见 [reporting.md](reporting.md#调参)。
+详见 [reporting.md](reporting.md#9-调参建议)。
 
 ---
 
@@ -433,7 +433,7 @@ en2m_attribute_write(ENDPOINT, EN2M_CLUSTER_ON_OFF, EN2M_ATTR_ON_OFF, en2m_bool(
 ### 7.1 那个属性本来就不持久化
 
 只有一部分属性默认 `persist = true`（执行器状态），传感器读数一律不持久化。
-19 个属性的清单见 [persistence.md](persistence.md#哪些属性会持久化)。
+19 个属性的清单见 [persistence.md](persistence.md#1-哪些属性会持久化)。
 
 自建属性时自己指定：
 
@@ -469,7 +469,7 @@ ESP_ERROR_CHECK(drv_gpio_relay_init(PIN_RELAY, true));   /* ← 必须在前面 
 ESP_ERROR_CHECK(en2m_start(&cfg));
 ```
 
-见 [persistence.md](persistence.md#开机恢复)。
+见 [persistence.md](persistence.md#5-开机恢复)。
 
 ### 7.4 NVS 坏了
 
@@ -522,7 +522,7 @@ en2m_schedule_from_isr(fn, arg, &woken);
 en2m_attribute_set_from_isr(ep, cluster, attr, value, &woken);
 ```
 
-全表见 [concurrency.md](concurrency.md#每个-api-能在哪里调)。
+全表见 [concurrency.md](concurrency.md#6-每个公开-api-的可调用上下文)。
 
 > 陷阱：`esp_timer` 回调**默认不在** ISR 里（跑在 `esp_timer` 任务上），
 > 所以可以直接用普通 API。但如果创建 timer 时用了
@@ -558,7 +558,7 @@ static void on_changed(const en2m_attr_path_t *path, const en2m_value_t *v, void
 就是无限递归 → 栈溢出。
 
 要么自己防重入（一个 `static bool busy`），要么用 `en2m_schedule` 把工作
-挪到下一轮。见 [concurrency.md](concurrency.md#已知的注意事项)。
+挪到下一轮。见 [concurrency.md](concurrency.md#7-已知的并发注意点)。
 
 ### 8.5 `user_ctx` 是野指针
 

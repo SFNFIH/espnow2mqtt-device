@@ -8,7 +8,7 @@
 任务和循环可以整个删掉**。
 
 - 想直接看新写法 → [usage.md](usage.md)
-- 想搞懂为什么这么改 → [architecture.md](architecture.md#关键设计决策)
+- 想搞懂为什么这么改 → [architecture.md](architecture.md#4-关键设计决策)
 
 ---
 
@@ -258,7 +258,7 @@ WARN 提醒你），留着只是为了让旧代码编得过。**删掉整个任�
 ```
 
 16 种设备类型和它们各自包含的 cluster 见
-[data-model.md](data-model.md#设备类型配方)。找不到完全对应的类型就用
+[data-model.md](data-model.md#5-设备类型配方)。找不到完全对应的类型就用
 `en2m_endpoint_create` + `en2m_cluster_create` 自己拼，或者
 `en2m_endpoint_add_device_type` 叠加多个。
 
@@ -276,7 +276,7 @@ WARN 提醒你），留着只是为了让旧代码编得过。**删掉整个任�
 `switch (path->cluster_id)`。
 
 九个不同 cluster 的主属性 ID 都是 `0x0000`，所以**只 `switch (attribute_id)` 一定出错**。
-清单见 [data-model.md](data-model.md#属性-id-会撞车)。
+清单见 [data-model.md](data-model.md#注意-attribute-id-会重名)。
 
 如果你不想写一个大 switch（尤其是本来就有好几个 cluster 的固件），
 用 `en2m_cluster_set_write_cb` / `_read_cb` 按 cluster 注册，形状和旧的 ops
@@ -321,7 +321,7 @@ en2m_cluster_set_write_cb(c, on_fan_write, &s_fan);   /* ← 最接近旧 ops �
 | 只是读了传感器 | `en2m_attribute_set` 或 `en2m_report_*` |
 
 两条路径的区别是这次改动的核心，搞混会导致状态和硬件不一致。
-见 [callbacks.md](callbacks.md#两条访问路径)。
+见 [callbacks.md](architecture.md#45-两条属性访问路径故意不等价)。
 
 `en2m_model_notify` 的第三个参数 `immediate` 没有对应物：
 `en2m_attribute_set` 总是会排一次上报，节奏由 `min_report_interval_ms` 控制。
@@ -353,14 +353,14 @@ en2m_cluster_set_write_cb(c, on_fan_write, &s_fan);   /* ← 最接近旧 ops �
 | 新能力 | 怎么用 | 文档 |
 |---|---|---|
 | 属性断电不丢 | 执行器属性默认就开了 `persist`，什么都不用做 | [persistence.md](persistence.md) |
-| 写失败不谎报状态 | `on_write` 返回非 `ESP_OK` | [callbacks.md](callbacks.md#1-attribute_write) |
+| 写失败不谎报状态 | `on_write` 返回非 `ESP_OK` | [callbacks.md](callbacks.md#1-attribute_write--把值落到硬件) |
 | 12 个异步事件 | `esp_event_handler_register(EN2M_EVENT, …)` | [events.md](events.md) |
 | ISR 安全的属性提交 | `en2m_attribute_set_from_isr` | [concurrency.md](concurrency.md) |
-| 把活挪到组件任务 | `en2m_schedule` / `_from_isr` | [api-reference.md](api-reference.md#延迟工作) |
+| 把活挪到组件任务 | `en2m_schedule` / `_from_isr` | [api-reference.md](api-reference.md#延迟执行) |
 | 四种上报模式 + 限流 | `cfg.report_mode` / `min_report_interval_ms` | [reporting.md](reporting.md) |
-| Identify 效果 | `cfg.identify` + `en2m_cluster_create(ep, EN2M_CLUSTER_IDENTIFY)` | [callbacks.md](callbacks.md#5-identify) |
-| 下行 ACK / 重传 | 协调器侧自动，事件里能看到结果 | [state-flow.md](state-flow.md#7-ackretry-状态机) |
-| 上报超长自动降级 | 自动，不会截断 | [reporting.md](reporting.md#160-字节降级) |
+| Identify 效果 | `cfg.identify` + `en2m_cluster_create(ep, EN2M_CLUSTER_IDENTIFY)` | [callbacks.md](callbacks.md#5-identify--认人效果) |
+| 下行 ACK / 重传 | 协调器侧自动，事件里能看到结果 | [state-flow.md](state-flow.md#7-下行-ack--重传状态机) |
+| 上报超长自动降级 | 自动，不会截断 | [reporting.md](reporting.md#7-160-字节与降级策略) |
 | Kconfig 调容量省 RAM | `sdkconfig.defaults` | [kconfig.md](kconfig.md) |
 
 `Identify` cluster 和 `EN2M_ATTR_IDENTIFY_TIME` 属性也是新加的
@@ -397,7 +397,7 @@ en2m_cluster_set_write_cb(c, on_fan_write, &s_fan);   /* ← 最接近旧 ops �
 改了组件本身记得同步另一份。
 
 上报载荷的完整格式见 [../protocol/PROTOCOL.md](../protocol/PROTOCOL.md)，
-cluster → HA 键的映射表见 [reporting.md](reporting.md#cluster--ha-json-键映射)。
+cluster → HA 键的映射表见 [reporting.md](reporting.md#5-序列化cluster--ha-json-键)。
 HA 集成（`espnow2mqtt-ha`）和 bridge 都不需要改。
 
 ---

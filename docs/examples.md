@@ -119,7 +119,7 @@ ISR 里**不能**调 `en2m_attribute_get` / `en2m_attribute_write`（都要拿�
 | 引脚 | `PIN_RELAY` / `PIN_BUTTON` |
 | 继电器是低电平有效 | `drv_gpio_relay_init(PIN_RELAY, false)` |
 | 不是继电器而是 MOSFET/SSR | `on_write` 里换成你的输出函数就行 |
-| 多路继电器 | 见 [usage.md 配方 E](usage.md#配方-e--一个固件驱动多个外设)，用多 cluster |
+| 多路继电器 | 见 [usage.md 配方 E](usage.md#配方-e--一个固件驱动多个互不相关的外设)，用多 cluster |
 | HA 里显示成灯而不是插座 | `EN2M_DEVICE_TYPE_ON_OFF_LIGHT` |
 
 ---
@@ -359,7 +359,7 @@ static void simulate_motion(void *arg)        /* esp_timer 任务上下文 */
 
 > 这里有个容易忽略的细节：`esp_timer` 回调默认跑在专用任务上，但如果你创建 timer
 > 时用了 `.dispatch_method = ESP_TIMER_ISR`，它就真的在中断里了，那时必须用
-> `_from_isr` 版本。见 [concurrency.md](concurrency.md#回调的运行上下文)。
+> `_from_isr` 版本。见 [concurrency.md](concurrency.md#4-每个回调跑在哪个上下文)。
 
 ### 顺序：`en2m_start` 之后才启动事件源
 
@@ -420,7 +420,7 @@ static esp_err_t on_fan_write(const en2m_attr_path_t *path, const en2m_value_t *
 调用顺序是 **cluster 回调 → 设备级回调 → 直接提交**，任一级返回
 `ESP_ERR_NOT_SUPPORTED` 就往下走。所以两种风格可以混用：特殊 cluster 用
 cluster 回调，其余的用设备级回调兜住。
-规则见 [callbacks.md](callbacks.md#三级-fall-through)。
+规则见 [callbacks.md](callbacks.md#6-三级-fall-through)。
 
 ### mode 和 percent 的关系
 
@@ -502,7 +502,7 @@ HA 的 cover 实体有开/关/停/百分比四个操作，少实现一个用户�
 
 **0 = 全开，100 = 全闭**（和 Matter 一致，和某些国产协议相反）。
 组件上报到 HA 时会把 `>= 95` 的位置额外标成 `"CLOSED"`，
-理由见 [reporting.md](reporting.md#窗帘的关闭阈值)。
+理由见 [reporting.md](reporting.md#窗帘的-cover-键是推导出来的)。
 
 `en2m_report_cover_position` 会把入参夹到 0..100，所以你的行程计算不用担心越界。
 
@@ -555,7 +555,7 @@ HA 解锁        → on_write(UNLOCKED) → 提交 → 5 秒内写 NVS
 注意**恢复是走 `on_write` 的**，不是直接改属性值。这样设计的理由：
 硬件必须真的被驱动到那个状态，否则属性值和物理世界就不一致了。
 代价是 `bolt_drive`（这里是 `drv_*_init` 的位置）必须在 `en2m_start` 之前准备好。
-完整分析见 [persistence.md](persistence.md#为什么恢复要走-write-而不是直接写值)。
+完整分析见 [persistence.md](persistence.md#为什么用-write-而不是直接塞值)。
 
 ### 锁状态是枚举，不是布尔
 
@@ -662,13 +662,13 @@ if (s_hvac.local_centi > s_hvac.heating_centi + 20) {
 示例里 `hvac_control()` 只改本地变量和打日志，**没有**调 `en2m_attribute_set`。
 这是有意的：`attribute_changed` 跑在触发提交的那个任务上，在它里面再提交属性
 会**重入这个回调**。真要在闭环里上报点什么（比如一个"正在加热"的状态），
-用 `en2m_schedule` 挪出去。见 [concurrency.md](concurrency.md#已知的注意事项)。
+用 `en2m_schedule` 挪出去。见 [concurrency.md](concurrency.md#7-已知的并发注意点)。
 
 ### 上报的是哪个设定点
 
 组件只上报**当前模式对应的**那个设定点：HEAT 模式报 heating，COOL 模式报 cooling。
 HA 的 climate 实体只有一个 `temperature` 字段，所以这是必须的。
-细节见 [reporting.md](reporting.md#温控器只报生效的设定点)。
+细节见 [reporting.md](reporting.md#温控器只报当前在追的那个-setpoint)。
 
 ---
 

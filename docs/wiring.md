@@ -1,19 +1,119 @@
-# 接线说明
+# 接线与引脚
 
 ## ESP32-S3 协调器
 
-仅 USB-C 接到 HA 主机（原生 USB / Serial-JTAG）。
+**只接 USB-C 到 HA 主机**，不需要任何其它接线。
 
-## 示例设备（ESP32-C3）
+必须用带**原生 USB / Serial-JTAG** 的 S3 板子（不是外挂 CP2102/CH340 的那种）——
+协调器固件走的是 USB Serial/JTAG 控制台。协调器固件在
+[espnow2mqtt-host](https://github.com/SFNFIH/espnow2mqtt-host) 仓库。
 
-详见 [`examples.md`](examples.md)。默认引脚：
+S3 **不连家庭 Wi-Fi**，只锁定信道跑 ESP-NOW。所以它不需要配网，插上就能用。
 
-| 示例 | GPIO | 说明 |
-|------|------|------|
-| th_sensor | 4 | DHT22 DATA（需上拉） |
-| contact_sensor | 9 | 干簧管到 GND |
-| relay_switch / smart_plug | 5 + 9 | 继电器 IN + 按键 |
+---
+
+## 示例设备默认引脚（ESP32-C3）
+
+| 示例 | GPIO | 接什么 | 备注 |
+|---|---|---|---|
+| `relay_switch` | **5** | 继电器模块 `IN` | 高电平有效（`drv_gpio_relay_init(pin, true)`） |
+| `relay_switch` | **9** | 按键到 GND | 多数 C3 开发板上就是 BOOT 键，不用外接 |
+| `smart_plug` | **5** + **9** | 继电器 `IN` + 按键 | 和 `relay_switch` 相同 |
+| `th_sensor` | **4** | DHT22 `DATA` | **需要 4.7–10 kΩ 上拉到 3V3** |
+| `contact_sensor` | **9** | 干簧管 / 门磁的一端到 GND | 低电平有效，用内部上拉 |
+| `dimmable_light` | — | 无（内存 stub） | 换成 LEDC 时自己选引脚 |
+| `fan_controller` | — | 无（内存 stub） | 同上 |
+| `window_cover` | — | 无（内存 stub） | 同上 |
+| `door_lock` | — | 无（内存 stub） | 同上 |
+| `occupancy_sensor` | — | 无（`esp_timer` 模拟 PIR） | 同上 |
+| `firmware/router` | — | 只要供电 | 纯转发，不接外设 |
+
+引脚都是 `main.c` 顶部的 `#define`，改一行就换。
+
+---
+
+## ESP32-C3 引脚选择须知
+
+C3 只有 22 个 GPIO，其中好几个不能随便用：
+
+| GPIO | 能用吗 | 说明 |
+|---|---|---|
+| 0–1 | 谨慎 | 通常接 32 kHz 晶振或按键，看板子原理图 |
+| 2 | **谨慎** | **strapping 引脚**，上电时被采样。接了外设可能导致启动模式不对 |
+| 3 | 可以 | |
+| 4–7 | **推荐** | 最干净的一批。示例用 4（DHT）、5（继电器） |
+| 8 | **谨慎** | strapping 引脚，很多板子上接了板载 LED |
+| 9 | 可以 | strapping（BOOT 键），**但作为输入很好用**，示例都用它当按键 |
+| 10 | 可以 | |
+| 11–17 | **不要用** | 接内部 flash（SPI），动了直接起不来 |
+| 18–19 | **不要用** | USB D−/D+，用了就没串口了 |
+| 20–21 | 可以 | UART0 TX/RX，用了就没 UART 日志（USB-JTAG 控制台仍然有） |
+
+**结论：优先用 GPIO 3–7 和 10，输入用 9。** 拿不准就查你那块板子的原理图。
+
+### ADC
+
+C3 的 ADC1 在 **GPIO 0–4**。要接模拟传感器（光敏、电位器、NTC）就从这几个里选，
+注意会和上表打架——GPIO 4 最安全。
+
+### 上电默认电平
+
+`gpio_config` 之前引脚是浮空的，所以**继电器在固件跑起来之前状态不确定**。
+接强电时务必用：
+
+- 低电平有效的继电器模块 + 外部下拉，或者
+- 带锁存的固态继电器
+
+这个问题在开机恢复持久化状态那一小段时间里也存在
+（`drv_gpio_relay_init` 之前）。所以驱动 init 一定要放在 `app_main` 最前面，
+见 [usage.md 第 5 步](usage.md#第-5-步填配置en2m_start收工)。
+
+---
+
+## 供电
+
+**ESP32-C3 发射瞬间峰值电流约 350 mA。** 供电不足的典型症状是
+"一入网就重启"或者串口上反复出现启动 banner。
+
+| 场景 | 建议 |
+|---|---|
+| 开发调试 | USB 直供，没问题 |
+| 继电器同板 | 继电器线圈**单独供电**，或者至少加 470 µF 以上的储能电容 |
+| 电池供电 | LDO 要能扛 500 mA 瞬时；加 100 µF + 100 nF 就近去耦 |
+| 外部 3V3 | 靠近模块放一个 10 µF + 100 nF |
+
+看到不明重启，先怀疑供电，再怀疑代码。
+见 [troubleshooting.md 2.4](troubleshooting.md#24-供电抖动)。
+
+---
+
+## 天线与摆放
+
+ESP-NOW 的可靠性几乎完全由 RSSI 决定，而 RSSI 由摆放决定：
+
+- **天线区域不要覆铜、不要压屏蔽罩**，模块的天线端要伸出板边或者下方挖空
+- 金属外壳里的设备（比如装在铁质配电箱里）基本收不到信号，要外引天线
+- 混凝土承重墙、镀膜玻璃、大块金属（冰箱、洗衣机）都是强衰减体
+- 入网后看 `parent=... rssi=` 那行判断余量：
+
+| RSSI | 判断 |
+|---|---|
+| 优于 −60 dBm | 很好 |
+| −60 ~ −75 dBm | 可用 |
+| −75 ~ −85 dBm | 勉强，会偶发丢包和 `parent stale` |
+| 差于 −85 dBm | 需要挪位置或者加一个 `EN2M_ROLE_ROUTER` 中继 |
+
+中继固件见 [examples.md](examples.md#firmwarerouter)，
+路由器**必须常电**——它要一直收发 beacon 和转发。
+
+---
 
 ## 信道
 
-默认 Wi-Fi channel **1**，全网一致（`EN2M_WIFI_CHANNEL`）。
+默认 Wi-Fi channel **1**（`CONFIG_EN2M_WIFI_CHANNEL`），
+**全网（协调器 + 路由器 + 所有设备）必须一致**。
+
+不一致时是完全静默的：没有错误、没有日志，设备就是找不到父节点。
+这是最常见的"死活不上线"原因。
+
+选择策略（和家里 AP 错开）和改法见 [kconfig.md](kconfig.md#2-信道)。

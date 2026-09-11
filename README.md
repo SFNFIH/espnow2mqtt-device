@@ -211,12 +211,31 @@ protocol/PROTOCOL.md
 
 ## 文档
 
-- [components/en2m/README.md](components/en2m/README.md) — **库 API 参考**
-- [docs/quickstart.md](docs/quickstart.md) — 配对流程（主机在 host 仓库）
-- [docs/mesh-roles.md](docs/mesh-roles.md) — Leaf / Router
-- [docs/wiring.md](docs/wiring.md) — 引脚
-- [docs/architecture.md](docs/architecture.md) — 分层与线程模型
-- [protocol/PROTOCOL.md](protocol/PROTOCOL.md) — 状态/命令 JSON
+**[docs/](docs/README.md) 是完整文档的入口**，按"我想做什么"分好了路线。
+下面是最常用的几篇：
+
+| 我想…… | 看这篇 |
+|---|---|
+| 先跑起来，看到 HA 里出实体 | [docs/quickstart.md](docs/quickstart.md) |
+| **从零写一个自己的设备** | [docs/usage.md](docs/usage.md) |
+| 照着现成示例改 | [docs/examples.md](docs/examples.md) |
+| 搞懂整体架构和分层取舍 | [docs/architecture.md](docs/architecture.md) |
+| **搞懂状态怎么流转**（启动、上报、命令、入网） | [docs/state-flow.md](docs/state-flow.md) |
+| 搞懂五个回调的完整契约 | [docs/callbacks.md](docs/callbacks.md) |
+| 查某个函数的准确语义和可调用上下文 | [docs/api-reference.md](docs/api-reference.md) |
+| 全部 cluster / attribute ID 和设备类型 | [docs/data-model.md](docs/data-model.md) |
+| 调上报频率、看 HA JSON 键和单位 | [docs/reporting.md](docs/reporting.md) |
+| 搞懂 mesh 组网、选父、配网 | [docs/mesh.md](docs/mesh.md) |
+| 调内存 / 超时 / 信道 | [docs/kconfig.md](docs/kconfig.md) |
+| **设备不上线 / 命令不生效 / 状态不更新** | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| 从旧的 driver-ops 版本升级 | [docs/migration.md](docs/migration.md) |
+| 看空中协议和 USB 协议 | [protocol/PROTOCOL.md](protocol/PROTOCOL.md) |
+| 看英文 API 速查 | [components/en2m/README.md](components/en2m/README.md) |
+
+其余还有 [concurrency.md](docs/concurrency.md)（线程与锁）、
+[persistence.md](docs/persistence.md)（NVS）、
+[events.md](docs/events.md)（12 个事件）、
+[wiring.md](docs/wiring.md)（接线）。
 
 ---
 

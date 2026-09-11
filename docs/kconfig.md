@@ -204,7 +204,7 @@ heartbeat 30s ──── offline 90s     （= 3 个心跳周期）
 - 让设备重启后立刻主动上行一次（`en2m_report_now`，默认配置本来就会在启动
   500 ms 后报一次），协调器收到就会刷新路由
 
-细节见 [mesh.md](mesh.md#配网与重连)。
+细节见 [mesh.md](mesh.md#离线超过-2-分钟的设备回来会怎样)。
 
 ---
 
@@ -215,7 +215,7 @@ heartbeat 30s ──── offline 90s     （= 3 个心跳周期）
 `en2m` 任务只有**一个**队列，三种东西共用它：收到的帧（`EN2M_ITEM_RX`）、
 `en2m_schedule` 的工作项（`EN2M_ITEM_WORK`）、ISR 里提交的属性
 （`EN2M_ITEM_ATTR`）。共用一个队列是为了保证顺序（详见
-[architecture.md](architecture.md#一个队列)）。
+[architecture.md](architecture.md#42-一个队列不是三个)）。
 
 **每个槽位 240 字节**（联合体里最大的是一整个 221 字节的帧），所以
 8 → 16 要多 1920 字节 DRAM。

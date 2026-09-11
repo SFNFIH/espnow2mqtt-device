@@ -104,7 +104,7 @@ if (ep == NULL) {
 
 `en2m_endpoint_create_device` = 建 endpoint + 把这个设备类型需要的 cluster 和
 默认属性全都填好。16 种设备类型分别对应哪些 cluster，见
-[data-model.md](data-model.md#设备类型配方)。
+[data-model.md](data-model.md#5-设备类型配方)。
 
 要**叠加**多个类型（比如温湿度二合一），先建空 endpoint 再加：
 
@@ -171,7 +171,7 @@ static esp_err_t on_write(const en2m_attr_path_t *path, const en2m_value_t *valu
    九个不同 cluster 的主属性 ID 都是 `0x0000`（`EN2M_ATTR_ON_OFF`、
    `EN2M_ATTR_CURRENT_LEVEL`、`EN2M_ATTR_MEASURED_VALUE`…… 全都是 0）。
    只看 `attribute_id` 必然张冠李戴。完整清单见
-   [data-model.md](data-model.md#属性-id-会撞车)。
+   [data-model.md](data-model.md#注意-attribute-id-会重名)。
 2. **不认识的路径返回 `ESP_ERR_NOT_SUPPORTED`，不要返回 `ESP_FAIL`。**
    `NOT_SUPPORTED` 的意思是"不是我管的，往下走"；`ESP_FAIL` 的意思是
    "我管，但我失败了"，组件会**拒绝提交**这次写入，HA 里的状态会弹回去。
@@ -216,7 +216,7 @@ void app_main(void)
 
 | 顺序 | 为什么 |
 |---|---|
-| 硬件驱动 **先于** `en2m_start` | 持久化属性的开机回放会调用你的 `attribute_write`，驱动没初始化就会失败，状态就丢了。详见 [persistence.md](persistence.md#开机恢复) |
+| 硬件驱动 **先于** `en2m_start` | 持久化属性的开机回放会调用你的 `attribute_write`，驱动没初始化就会失败，状态就丢了。详见 [persistence.md](persistence.md#5-开机恢复) |
 | 数据模型 **先于** `en2m_start` | 启动后建模型返回 `ESP_ERR_INVALID_STATE` |
 | 事件注册（可选）**先于** `en2m_start` | 否则会漏掉 `EN2M_EVENT_STARTED`。见 [events.md](events.md) |
 
@@ -298,7 +298,7 @@ void app_main(void)
   同一条路径，状态一定一致，也一定会上报。
 - ISR 里只能调 `*_from_isr` 系列。`en2m_schedule_from_isr` 把活挪到 `en2m` 任务，
   在那里可以随便用阻塞 API。上下文规则全表见
-  [concurrency.md](concurrency.md#每个-api-能在哪里调)。
+  [concurrency.md](concurrency.md#6-每个公开-api-的可调用上下文)。
 - `EN2M_DEVICE_TYPE_ON_OFF_PLUG` 的 `OnOff` 属性默认 `persist = true`，
   所以重启后 `en2m_start` 会自动把上次的状态写回继电器。
 
@@ -445,10 +445,10 @@ static void on_pir_timer(void *arg)     /* esp_timer 任务上下文 */
 
 - 推送路径用 `en2m_attribute_set` / `en2m_report_*`，**不是** `en2m_attribute_write`。
   传感器的真值在应用手里，组件没有理由回头问你"能不能写"。两条路径的区别见
-  [callbacks.md](callbacks.md#两条访问路径)。
+  [callbacks.md](architecture.md#45-两条属性访问路径故意不等价)。
 - `en2m_report_boolean_state(ep, v)` 就是
   `en2m_attribute_set(ep, EN2M_CLUSTER_BOOLEAN_STATE, EN2M_ATTR_STATE_VALUE, en2m_bool(v))`
-  的别名，16 个便捷函数一览见 [api-reference.md](api-reference.md#便捷上报函数)。
+  的别名，16 个便捷函数一览见 [api-reference.md](api-reference.md#便利上报函数)。
 - **值没变就不会上报。** 组件在属性存储层做去重，抖动的传感器不会刷网。
   真的想每次都发，用 `en2m_report_now()`。
 - 同时挂一个 `attribute_read` 兜底是个好习惯：周期上报时重读一次真实电平，
@@ -553,12 +553,12 @@ void app_main(void)
 
 调用顺序是 **cluster 回调 → 设备级回调 → 直接提交**，任何一级返回
 `ESP_ERR_NOT_SUPPORTED` 就往下一级走。所以你可以用 cluster 回调处理特殊 cluster，
-再用设备级回调兜住其余的。完整规则见 [callbacks.md](callbacks.md#三级-fall-through)。
+再用设备级回调兜住其余的。完整规则见 [callbacks.md](callbacks.md#6-三级-fall-through)。
 
 > **多外设优先用多 cluster，而不是多 endpoint。** 当前的属性存储用的是
 > 全局扁平键，上报时同一个 cluster 只会取编号最小的那个 endpoint，所以
 > "两个 OnOff endpoint"不会在 HA 里变成两个开关。限制细节见
-> [data-model.md](data-model.md#多-endpoint-的限制)。
+> [data-model.md](data-model.md#什么时候需要多个-endpoint)。
 
 ---
 
@@ -582,7 +582,7 @@ static void on_changed(const en2m_attr_path_t *path, const en2m_value_t *value, 
 `attribute_changed` **跑在触发写入的那个任务上**（远程命令是 `en2m` 任务，
 本地 `en2m_attribute_set` 是你的任务），而且在它里面再调 `en2m_attribute_set`
 会**重入**这个回调。要么自己防重入，要么把闭环用 `en2m_schedule` 挪出去。
-见 [concurrency.md](concurrency.md#回调的运行上下文)。
+见 [concurrency.md](concurrency.md#4-每个回调跑在哪个上下文)。
 
 ### 用事件做诊断，而不是轮询状态
 

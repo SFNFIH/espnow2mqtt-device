@@ -1,8 +1,15 @@
 # espnow2mqtt-device 文档
 
 这里是 **C3 终端设备侧**（`en2m` 组件 + 示例 + 参考驱动）的完整文档。
-主机侧（S3 协调器 + Python Bridge）在 [espnow2mqtt-host](https://github.com/SFNFIH/espnow2mqtt-host)，
-HA 集成在 [espnow2mqtt-ha](https://github.com/SFNFIH/espnow2mqtt-ha)。
+
+另外两个仓库各有一份同样详细的 `docs/`：
+
+| 仓库 | 内容 | 什么时候去那边 |
+|---|---|---|
+| [espnow2mqtt-host](https://github.com/SFNFIH/espnow2mqtt-host/tree/main/docs) | S3 协调器固件 + Python Bridge + HA Add-on | 查 USB NDJSON 协议、MQTT 主题、部署、协调器的 peer 表和 ACK 重传 |
+| [espnow2mqtt-ha](https://github.com/SFNFIH/espnow2mqtt-ha/tree/main/docs) | HA 自定义集成 | 查 `caps` → HA 实体的映射、单位换算、自动化写法 |
+
+跨三个仓库的端到端流程在本仓库的 [quickstart.md](quickstart.md)。
 
 ## 一句话说明这个库是什么
 

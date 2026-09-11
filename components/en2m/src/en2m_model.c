@@ -104,6 +104,23 @@ static en2m_fan_mode_t en2m_fan_mode_parse(const char *s)
     return EN2M_FAN_OFF;
 }
 
+/* Must stay in step with EVENT_TYPES in the integration's event.py: anything
+ * else is folded into "press" there, silently losing the distinction. */
+static const char *en2m_press_action_str(uint8_t action)
+{
+    switch (action) {
+    case EN2M_PRESS_DOUBLE:
+        return "double_press";
+    case EN2M_PRESS_LONG:
+        return "long_press";
+    case EN2M_PRESS_RELEASE:
+        return "release";
+    case EN2M_PRESS_SHORT:
+    default:
+        return "press";
+    }
+}
+
 static const char *en2m_hvac_mode_str(uint8_t mode)
 {
     switch (mode) {
@@ -223,6 +240,19 @@ static void en2m_report_cluster(cJSON *root, cJSON *caps, uint8_t ep_id, uint16_
             cJSON_AddNumberToObject(root, "color_temp", (double)v);
             cJSON_AddStringToObject(root, "color_mode", "color_temp");
             en2m_caps_add(caps, "light");
+        }
+        break;
+
+    case EN2M_CLUSTER_SWITCH:
+        /* The counter is the payload here; the action only qualifies it. A
+         * node that has never been pressed reports neither, so the receiver
+         * does not invent an event out of the first retained report it sees. */
+        if (en2m_model_read(ep_id, cluster_id, EN2M_ATTR_PRESS_COUNT, &v) && v > 0) {
+            cJSON_AddNumberToObject(root, "button", (double)v);
+            en2m_caps_add(caps, "button");
+            if (en2m_model_read(ep_id, cluster_id, EN2M_ATTR_PRESS_ACTION, &v2)) {
+                cJSON_AddStringToObject(root, "button_action", en2m_press_action_str((uint8_t)v2));
+            }
         }
         break;
 

@@ -22,6 +22,8 @@
 | Thermostat | `OCCUPIED_COOLING_SETPOINT` | ✓ | |
 | Thermostat | `SYSTEM_MODE` | ✓ | |
 | ElectricalPower | `ENERGY_MWH` | ✓ | **累计量**，丢了就断档 |
+| Switch | `PRESS_COUNT` | ✓ | **累计量**，归零会被误读成一次按键 |
+| Switch | `PRESS_ACTION` | | 只在有新按键时才有意义 |
 | Identify | `IDENTIFY_TIME` | | 临时效果 |
 | Thermostat | `LOCAL_TEMPERATURE` | | 实测值，开机重新读 |
 | BooleanState | `STATE_VALUE` | | 门磁，开机重新读 |
@@ -32,7 +34,13 @@
 
 **判断标准很简单：这个值的真相源在哪？**
 在用户/HA 那边（"我要开灯"）就 persist；在物理世界那边（"现在 23 度"）就不 persist。
-`ENERGY_MWH` 是个例外——它是累计量，真相源在设备自己的历史里。
+`ENERGY_MWH` 和 `PRESS_COUNT` 是例外——它们是累计量，
+真相源在设备自己的历史里。
+
+`PRESS_COUNT` 还有一层原因：它是**接收方用来识别"又按了一次"的唯一依据**
+（见 [reporting.md](reporting.md#按键报的是计数器不是按了)）。
+重启后归零的话，计数器会倒退，而"倒退"和"新按了一次"一样都是"变了"——
+于是每次断电重启都会在 HA 里凭空触发一次按键事件。
 
 ## 2. 自己声明
 

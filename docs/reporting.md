@@ -166,6 +166,8 @@ if (s_model.next_report_ms == 0 || when < s_model.next_report_ms) {
 | LevelControl | `CURRENT_LEVEL` | `brightness` | 数字 | 原样 0–254 | `light` |
 | ColorControl | `COLOR_TEMPERATURE_MIREDS` | `color_temp` | 数字 | 原样 mired | `light` |
 | | | `color_mode` | `"color_temp"` | 固定值 | |
+| Switch | `PRESS_COUNT` | `button` | 数字 | 原样，自增 | `button` |
+| | `PRESS_ACTION` | `button_action` | `"press"`/`"double_press"`/… | 枚举转字符串 | |
 | BooleanState | `STATE_VALUE` | `contact` | `"ON"` / `"OFF"` | | `contact` |
 | Occupancy | `OCCUPANCY` | `occupancy` | `"ON"` / `"OFF"` | | `occupancy` |
 | Illuminance | `MEASURED_VALUE` | `illuminance` | 数字 | 原样 lux | `illuminance` |
@@ -184,6 +186,37 @@ if (s_model.next_report_ms == 0 || when < s_model.next_report_ms) {
 | Thermostat | `SYSTEM_MODE` | `hvac_mode` | `"off"`/`"cool"`/… | 枚举转字符串 | `climate` |
 | | `LOCAL_TEMPERATURE` | `current_temperature` | 数字 | **÷ 100** → °C | |
 | | 按当前模式挑 setpoint | `target_temperature` | 数字 | **÷ 100** → °C | |
+
+### 按键报的是计数器，不是"按了"
+
+```c
+if (en2m_model_read(ep_id, cluster_id, EN2M_ATTR_PRESS_COUNT, &v) && v > 0) {
+    cJSON_AddNumberToObject(root, "button", (double)v);
+    en2m_caps_add(caps, "button");
+    if (en2m_model_read(ep_id, cluster_id, EN2M_ATTR_PRESS_ACTION, &v2)) {
+        cJSON_AddStringToObject(root, "button_action", en2m_press_action_str((uint8_t)v2));
+    }
+}
+```
+
+**每一条上报都是完整快照，而 `<slug>/state` 是 retained 的。**
+所以"按了一下"这件事只能通过某个值**变了**来表达。
+`button_action` 单独用不行：连续两次短按会产生两条一模一样的 payload，
+和"同一条被重发"完全无法区分。计数器解决这个问题。
+
+应用侧不需要管计数器，`en2m_report_button()` 自己加：
+
+```c
+en2m_report_button(ENDPOINT, EN2M_PRESS_DOUBLE);
+```
+
+`&& v > 0` 那个条件也是必要的：一个从没被按过的节点**不报 `button`**，
+否则 HA 会在收到第一条 retained 报文时凭空造出一次按键事件。
+
+计数器是持久化的，见
+[persistence.md](persistence.md)。两次按键间隔小于
+`min_report_interval_ms` 时会被合并成一条上报——计数器仍然加了两次，
+所以接收方能从跨度看出漏了几次。
 
 ### Identify cluster 不上报
 
@@ -241,9 +274,9 @@ if (brightness 存在 || color_temp 存在) {
 
 ### 全部可能的 caps
 
-`switch`、`light`、`contact`、`occupancy`、`illuminance`、`temperature`、
-`humidity`、`pressure`、`smoke`、`carbon_monoxide`、`power`、`energy`、
-`fan`、`cover`、`lock`、`climate`。
+`switch`、`light`、`button`、`contact`、`occupancy`、`illuminance`、
+`temperature`、`humidity`、`pressure`、`smoke`、`carbon_monoxide`、
+`power`、`energy`、`fan`、`cover`、`lock`、`climate`。
 
 ### `caps` 缺失时会怎样
 

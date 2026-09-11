@@ -3,8 +3,9 @@
 示例在仓库根目录 **`examples/`**，一个目录一个独立 ESP-IDF 工程。
 参考驱动在 **`drivers/`**，被多个示例共享。
 
-十个示例不是十个"功能演示"，而是**十种把硬件接到这个库上的姿势**。选示例的时候
-不要只看设备类型像不像，要看**回调组合**像不像——那个才是你要抄的东西。
+十一个示例不是十一个"功能演示"，而是**十一种把硬件接到这个库上的姿势**。
+选示例的时候不要只看设备类型像不像，要看**回调组合**像不像——
+那个才是你要抄的东西。
 
 ## 一览
 
@@ -15,6 +16,7 @@
 | [`smart_plug`](#smart_plug) | OnOff + ElectricalPower | `write` + `read` | 两种方向混用：执行器靠写，计量靠读 |
 | [`th_sensor`](#th_sensor) | Temperature + Humidity | 只有 `read` | 纯拉取型；采样周期用 `min_report_interval_ms` 保护 |
 | [`contact_sensor`](#contact_sensor) | BooleanState | `read`（兜底）+ ISR 推送 | 事件驱动 + 周期性自愈 |
+| [`scene_switch`](#scene_switch) | Switch | 一个回调都没有 | 纯上行、无状态；`EN2M_REPORT_ON_CHANGE_ONLY` |
 | [`occupancy_sensor`](#occupancy_sensor) | Occupancy + Illuminance | `read` + `en2m_schedule` 推送 | 一个 endpoint 上推、拉两种传感器并存 |
 | [`fan_controller`](#fan_controller) | FanControl | 按 cluster 注册的 `write` | `en2m_cluster_set_write_cb` + 私有 `ctx` |
 | [`window_cover`](#window_cover) | WindowCovering | 只有 `command` | 慢执行器：命令只管启停，位置自己上报 |
@@ -22,7 +24,8 @@
 | [`thermostat`](#thermostat) | Thermostat | `write` + `read` + `changed` | 三个回调配合跑设备端闭环 |
 | [`firmware/router`](#firmwarerouter) | 无 | 只有事件 | 纯传输层：`en2m_mesh_init` 不带数据模型 |
 
-**十个示例都没有 `while (1)`**，也都没有自建任务。
+**十一个示例都没有 `while (1)`**。只有 `scene_switch` 间接用到一个任务，
+而那个任务在驱动里（见 [§`scene_switch`](#scene_switch)），应用代码里没有。
 
 ## 怎么编译
 
@@ -329,6 +332,98 @@ static void on_contact_edge(void *arg)      /* 在 ISR 上 */
 示例上报的是 `open`（`drv_gpio_contact_get` 的语义），`CONTACT_ACTIVE_LOW = true`
 表示磁铁靠近时引脚拉低。接反了就把 `CONTACT_ACTIVE_LOW` 改掉，别在回调里取反——
 改配置比改逻辑好维护。
+
+---
+
+## `scene_switch`
+
+**`examples/scene_switch`** — 唯一一个**一个回调都没注册**的示例，
+因为按键是纯上行的：没有任何东西可以被远程写。
+
+```c
+en2m_device_config_t cfg = {
+    .mesh = {.role = EN2M_ROLE_LEAF, .name = "switch1", .model = "ex-scene"},
+    .report_mode = EN2M_REPORT_ON_CHANGE_ONLY,
+};
+
+en2m_endpoint_create_device(ENDPOINT, EN2M_DEVICE_TYPE_GENERIC_SWITCH);
+drv_gpio_button_gesture_init(PIN_BUTTON, BUTTON_ACTIVE_LOW, DEBOUNCE_MS,
+                             LONG_PRESS_MS, DOUBLE_GAP_MS, on_gesture, NULL);
+en2m_start(&cfg);
+```
+
+`on_gesture` 只做一次枚举翻译：
+
+```c
+static void on_gesture(drv_gpio_button_gesture_t gesture, void *ctx)
+{
+    en2m_press_action_t action;
+
+    switch (gesture) {
+    case DRV_BUTTON_DOUBLE_PRESS: action = EN2M_PRESS_DOUBLE;  break;
+    case DRV_BUTTON_LONG_PRESS:   action = EN2M_PRESS_LONG;    break;
+    case DRV_BUTTON_RELEASE:      action = EN2M_PRESS_RELEASE; break;
+    default:                      action = EN2M_PRESS_SHORT;   break;
+    }
+    en2m_report_button(ENDPOINT, action);
+}
+```
+
+HA 里会出现一个 `event.switch1_button` 实体，
+四种事件类型：`press` / `double_press` / `long_press` / `release`。
+
+### 为什么 `report_mode` 是 `ON_CHANGE_ONLY`
+
+默认模式（`EN2M_REPORT_DEFAULT`）会额外发周期性保活报文。
+按键节点没有任何值会自己变化，周期上报除了耗电什么也不做——
+而这类设备通常是纸电池供电的。
+
+`ON_CHANGE_ONLY` 的代价是**协调器的离线判定会误判**：
+90 秒收不到帧就算离线，而一个没人按的开关可以几天不发一个字节。
+真做电池开关的话要么接受"HA 里长期显示 unavailable"，
+要么改回 `EN2M_REPORT_DEFAULT` 并把周期拉长到几分钟。
+
+### 计数器不用自己管
+
+`en2m_report_button()` 内部读出 `PRESS_COUNT` 加一再写回。
+应用只说"按了哪一种"，不碰计数器。
+
+原因是这个计数器**不是给人看的，是协议的一部分**：
+`<slug>/state` 是 retained 的全量快照，所以两次短按会产生两条
+一模一样的 payload，接收方分不清是按了两次还是同一条被重发。
+计数器是唯一的区分手段。详见
+[reporting.md](reporting.md#按键报的是计数器不是按了)。
+
+### 手势识别在驱动里，不在应用里
+
+`drv_gpio_button`（另一个按键驱动）只回答"按了吗"，够用于
+`relay_switch` 那种"按一下切换继电器"的场景。
+场景开关需要知道"怎么按的"，所以用的是
+`drv_gpio_button_gesture`：它监听**双边沿**，
+把判定放在一个小任务里用队列超时当时钟。
+
+| | `drv_gpio_button` | `drv_gpio_button_gesture` |
+|---|---|---|
+| 回调上下文 | **ISR** | **任务** |
+| 监听边沿 | 单边（按下） | 双边 |
+| 能区分 | 只有"按了" | 短按 / 双击 / 长按 / 长按松开 |
+| 额外开销 | 无 | 一个队列 + 一个 2.5 KB 栈的任务 |
+
+**短按有固有延迟**：第一次按下松开之后，必须等
+`DOUBLE_GAP_MS`（示例里 300 ms）确认没有第二次按，才能确定是短按。
+这个延迟没法消除——在间隔到期之前，一次按和双击的前半段是同一回事。
+调小会让双击难按中，调大会让单击变迟钝。
+
+### 换成真硬件
+
+改 `PIN_BUTTON` 和 `BUTTON_ACTIVE_LOW` 就行。
+三个时间参数的手感建议：
+
+| 参数 | 示例值 | 合理范围 |
+|---|---|---|
+| `DEBOUNCE_MS` | 30 | 20–50，机械按键的抖动通常 < 20 ms |
+| `LONG_PRESS_MS` | 800 | 600–1000，低于 500 容易和短按混 |
+| `DOUBLE_GAP_MS` | 300 | 250–400 |
 
 ---
 
@@ -739,13 +834,14 @@ case EN2M_EVENT_RX_DROPPED:    /* 队列扛不住了，该调大 EN2M_QUEUE_LEN 
 
 ## 参考驱动
 
-`drivers/` 下四个驱动被示例共享，也可以直接拿去用。它们刻意写得很薄——
+`drivers/` 下五个驱动被示例共享，也可以直接拿去用。它们刻意写得很薄——
 硬件归应用，这是分层约定的一部分。
 
 | 驱动 | API | 用在 |
 |---|---|---|
 | `drv_gpio_relay` | `init(pin, active_high)` / `set(on, ctx)` / `get(&on, ctx)` | `relay_switch`、`smart_plug` |
 | `drv_gpio_button` | `init(pin, active_low, debounce_ms, cb, arg)` | `relay_switch`、`smart_plug` |
+| `drv_gpio_button_gesture` | `init(pin, active_low, debounce_ms, long_ms, double_gap_ms, cb, ctx)` | `scene_switch` |
 | `drv_gpio_contact` | `init(pin, active_low)` / `get(&open, ctx)` / `watch(isr, arg)` | `contact_sensor` |
 | `drv_dht` | `init(pin, type)` / `get_temperature(&centi_c, ctx)` / `get_humidity(&centi_pct, ctx)` | `th_sensor` |
 
@@ -755,6 +851,7 @@ case EN2M_EVENT_RX_DROPPED:    /* 队列扛不住了，该调大 EN2M_QUEUE_LEN 
   不改签名的情况下从"单实例"变成"多实例"，而回调里的 `ctx` 可以直接透传进去
   （`relay_switch` 里 `drv_gpio_relay_set(value->v.b, ctx)` 就是这么用的）。
 - **`drv_gpio_button` 的回调在 ISR 上**，`debounce_ms` 是在驱动里用时间戳做的
-  软消抖，不占定时器。
+  软消抖，不占定时器。`drv_gpio_button_gesture` 是唯一的例外：
+  它的回调在任务上，因为手势判定本身需要等待时间流逝。
 
 引脚分配建议见 [wiring.md](wiring.md)。

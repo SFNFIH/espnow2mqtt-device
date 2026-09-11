@@ -83,7 +83,7 @@ void app_main(void)
 |---|---|
 | [architecture.md](architecture.md) | 三层分层、每个源文件的职责、关键设计决策与取舍 |
 | [state-flow.md](state-flow.md) | 启动时序、属性状态机、上报流水线、命令流水线、入网状态机、ACK 重传状态机、持久化生命周期 |
-| [data-model.md](data-model.md) | endpoint/cluster/attribute 三级模型、值类型系统与类型强制、全部 cluster 与 attribute ID、16 种设备类型配方、容量与内存 |
+| [data-model.md](data-model.md) | endpoint/cluster/attribute 三级模型、值类型系统与类型强制、全部 cluster 与 attribute ID、17 种设备类型配方、容量与内存 |
 | [callbacks.md](callbacks.md) | `attribute_write` / `attribute_read` / `attribute_changed` / `command` / `identify` 的完整契约、三级 fall-through、两条访问路径 |
 | [concurrency.md](concurrency.md) | en2m 任务、统一队列、两把互斥锁、每个 API 的调用上下文、ISR 规则、栈用量 |
 | [reporting.md](reporting.md) | 四种上报模式、周期与限流、160 字节降级策略、cluster → HA JSON 键与单位的完整映射 |
@@ -93,7 +93,7 @@ void app_main(void)
 | [api-reference.md](api-reference.md) | 全部公开函数、参数、返回值、可调用上下文 |
 | [usage.md](usage.md) | 从零写设备的五步、执行器/传感器/电机/多外设四种配方、常见模式与反模式 |
 | [kconfig.md](kconfig.md) | 全部 Kconfig 选项、默认值、内存代价、调参建议 |
-| [examples.md](examples.md) | 10 个示例逐个详解，每个演示哪个库特性 |
+| [examples.md](examples.md) | 11 个示例逐个详解，每个演示哪个库特性 |
 | [troubleshooting.md](troubleshooting.md) | 按症状排错 |
 | [migration.md](migration.md) | driver-ops → 回调式的逐项迁移表 |
 | [quickstart.md](quickstart.md) | 最短路径跑通 |
@@ -102,4 +102,4 @@ void app_main(void)
 ## 版本
 
 文档对应 `EN2M_FW_VERSION = "0.4.0-idf"`，空中协议版本 `EN2M_VERSION = 2`，
-基于 ESP-IDF v5.5.5 验证（10 个示例 + router + S3 协调器全部零警告编译通过）。
+基于 ESP-IDF v5.5.5 验证（11 个示例 + router + S3 协调器全部零警告编译通过）。

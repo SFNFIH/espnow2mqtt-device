@@ -191,10 +191,42 @@ en2m_attribute_set(1, EN2M_CLUSTER_LEVEL_CONTROL, EN2M_ATTR_CURRENT_LEVEL,
 | TemperatureMeasurement | `0x0402` | `MEASURED_VALUE` | `0x0000` | i16 | 0 | | 0.01 °C |
 | RelativeHumidity | `0x0405` | `MEASURED_VALUE` | `0x0000` | u16 | 0 | | 0.01 %RH |
 | PressureMeasurement | `0x0403` | `MEASURED_VALUE` | `0x0000` | i32 | 0 | | 0.1 hPa |
+| Switch | `0x003B` | `NUMBER_OF_POSITIONS` | `0x0000` | u8 | 2 | | 元数据，不上报 |
+| | | `CURRENT_POSITION` | `0x0001` | u8 | 0 | | 元数据，不上报 |
+| | | `MULTI_PRESS_MAX` | `0x0002` | u8 | 2 | | 元数据，不上报 |
+| | | `PRESS_COUNT` | `0xFF00` | u32 | 0 | ✓ | **按键计数器**，见 [下文](#switch-cluster-为什么有两个非-matter-属性) |
+| | | `PRESS_ACTION` | `0xFF01` | enum8 | `SHORT` | | 最后一次按法，见枚举表 |
 | SmokeCO | `0x005C` | `SMOKE_STATE` | `0x0001` | bool | false | | true = 报警 |
 | | | `CO_STATE` | `0x0002` | bool | false | | true = 报警 |
 | ElectricalPower | `0x0B04` | `ACTIVE_POWER_MW` | `0x000A` | i32 | 0 | | 毫瓦 |
 | | | `ENERGY_MWH` | `0x0011` | i64 | 0 | ✓ | 毫瓦时（累计，所以持久化） |
+
+### Switch cluster 为什么有两个非 Matter 属性
+
+Matter 把按键做成 **event**：`InitialPress`、`ShortRelease`、
+`MultiPressComplete`、`LongPress`、`LongRelease`。event 是一次性的、
+带序号的、不可重放的。
+
+**本协议没有 event 这个概念。** 每一条上行都是一份完整的状态快照，
+而且 `<slug>/state` 在 MQTT 上是 retained 的。所以按键必须被表达成
+"状态"，而单纯的"最后一次按法"是不够的：
+
+| 固件报的 | 接收方能推出什么 |
+|---|---|
+| `{"button_action":"press"}` 连发两次 | **分不清**是按了两次，还是同一条被重发了 |
+| `{"button":7,...}` 然后 `{"button":8,...}` | 按了一次（7→8） |
+
+所以多了一个计数器。`PRESS_COUNT` 和 `PRESS_ACTION` 落在 `0xFF00` /
+`0xFF01`——Matter 给厂商自定义留的区间——因为它们是**传输层的补偿**，
+不是 Matter 数据模型的一部分。
+
+`PRESS_COUNT` 是**持久化**的：如果它在重启后归零，接收方会看到计数
+倒退，而倒退和"新按了一次"一样都是"变了"，于是每次重启都会凭空
+产生一次按键事件。
+
+三个真 Matter 属性（`NUMBER_OF_POSITIONS` / `CURRENT_POSITION` /
+`MULTI_PRESS_MAX`）建出来了但**不参与上报**：它们是设备能力的描述，
+160 字节的预算里放不下也用不上。留着是为了将来接真 Matter 桥。
 
 ### 注意 attribute ID 会重名
 
@@ -291,6 +323,19 @@ static esp_err_t on_write(const en2m_attr_path_t *path, const en2m_value_t *valu
 模式会影响 `target_temperature` 落到哪个 setpoint：**`cool` 落制冷 setpoint，
 其余落制热 setpoint**。上报时也是按当前模式挑对应的那个 setpoint 报出去。
 
+### `en2m_press_action_t`
+
+| 枚举 | 值 | 上报字符串 | 对应 Matter event |
+|---|:-:|---|---|
+| `EN2M_PRESS_SHORT` | 0 | `press` | InitialPress + ShortRelease |
+| `EN2M_PRESS_DOUBLE` | 1 | `double_press` | MultiPressComplete（2 次） |
+| `EN2M_PRESS_LONG` | 2 | `long_press` | LongPress |
+| `EN2M_PRESS_RELEASE` | 3 | `release` | LongRelease |
+
+**这四个字符串必须和 HA 集成 `event.py` 里的 `EVENT_TYPES` 一字不差。**
+集成对认不出来的值会折叠成 `press`，所以拼错不会报错，
+只会静默丢掉按法的区分。
+
 ### `en2m_command_id_t`
 
 | 名字 | 说明 |
@@ -333,6 +378,7 @@ static esp_err_t on_write(const en2m_attr_path_t *path, const en2m_value_t *valu
 | `WINDOW_COVERING` | WindowCovering | `cover` |
 | `DOOR_LOCK` | DoorLock | `lock` |
 | `THERMOSTAT` | Thermostat | `climate` |
+| `GENERIC_SWITCH` | Switch | `event` |
 
 ### 配方可以叠加
 

@@ -257,7 +257,7 @@ WARN 提醒你），留着只是为了让旧代码编得过。**删掉整个任�
 + en2m_endpoint_create_device(1, EN2M_DEVICE_TYPE_ON_OFF_PLUG);
 ```
 
-16 种设备类型和它们各自包含的 cluster 见
+17 种设备类型和它们各自包含的 cluster 见
 [data-model.md](data-model.md#5-设备类型配方)。找不到完全对应的类型就用
 `en2m_endpoint_create` + `en2m_cluster_create` 自己拼，或者
 `en2m_endpoint_add_device_type` 叠加多个。

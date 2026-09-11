@@ -103,7 +103,7 @@ if (ep == NULL) {
 ```
 
 `en2m_endpoint_create_device` = 建 endpoint + 把这个设备类型需要的 cluster 和
-默认属性全都填好。16 种设备类型分别对应哪些 cluster，见
+默认属性全都填好。17 种设备类型分别对应哪些 cluster，见
 [data-model.md](data-model.md#5-设备类型配方)。
 
 要**叠加**多个类型（比如温湿度二合一），先建空 endpoint 再加：

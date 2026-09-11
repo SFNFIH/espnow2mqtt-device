@@ -3,7 +3,7 @@
 **本仓库 = C3（及同类）终端 / 路由设备固件。**
 
 - ESP-IDF 组件 **`en2m`**：mesh + Matter 风格 Endpoint/Cluster/Attribute，**回调驱动，自带任务**
-- **`examples/*`**：开关、灯、风扇、窗帘、锁、温控、传感等 10 个示例（仓库根目录）
+- **`examples/*`**：开关、灯、风扇、窗帘、锁、温控、场景开关、传感等 11 个示例（仓库根目录）
 - **`drivers/`**：参考驱动（GPIO / 按键 / 门磁 / DHT），**不属于** `en2m`
 - **`firmware/router`**：常电转发节点
 
@@ -158,6 +158,7 @@ idf.py build flash
 | `door_lock` | 门锁 | 持久化状态开机回写执行器 | Lock |
 | `thermostat` | 温控 | write + read + changed，本地控温闭环 | Climate |
 | `occupancy_sensor` | 人体 + 光照 | `esp_timer` 事件源 + `en2m_schedule` | Binary + Sensor |
+| `scene_switch` | 按键 | 零回调、纯上行；短按/双击/长按 | Event |
 
 部分示例的硬件部分是 **内存 stub**，先打通 MQTT/HA，再换成真实驱动。
 
@@ -172,6 +173,7 @@ idf.py build flash
 | FanControl / WindowCovering / DoorLock / Thermostat | `fan` / `cover` / `lock` / `climate` |
 | Temperature / Humidity / Pressure / Illuminance / ElectricalPower | 对应 sensor |
 | BooleanState / Occupancy / SmokeCO | binary_sensor |
+| Switch | `button` → event 实体 |
 | Identify | — |
 
 上报 JSON ≤ `EN2M_DATA_MAX`（160 字节），扁平字段 + `caps`；放不下时组件按
@@ -200,7 +202,7 @@ idf.py build flash
 
 ```
 components/en2m/              # 核心组件（库）
-examples/                     # 10 个示例工程
+examples/                     # 11 个示例工程
 drivers/                      # 参考驱动
 firmware/router/              # 常电路由
 docs/

@@ -1,12 +1,12 @@
 dependencies:
   idf: ">=5.0"
 
-description: ESP-NOW tree mesh for Home Assistant USB coordinator (en2m)
-url: https://github.com/SFNFIH/espnow2mqtt-firmware
-issues: https://github.com/SFNFIH/espnow2mqtt-firmware/issues
-documentation: https://github.com/SFNFIH/espnow2mqtt-firmware/blob/main/components/en2m/README.md
-repository: https://github.com/SFNFIH/espnow2mqtt-firmware.git
-version: 0.3.2
+description: ESP-NOW mesh + Matter-style clusters for C3 end devices (en2m)
+url: https://github.com/SFNFIH/espnow2mqtt-device
+issues: https://github.com/SFNFIH/espnow2mqtt-device/issues
+documentation: https://github.com/SFNFIH/espnow2mqtt-device/blob/main/components/en2m/README.md
+repository: https://github.com/SFNFIH/espnow2mqtt-device.git
+version: 0.4.0
 license: MIT
 tags:
   - espnow

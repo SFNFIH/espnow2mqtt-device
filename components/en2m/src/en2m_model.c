@@ -33,6 +33,13 @@ static struct {
     int64_t next_identify_ms;
 } s_model;
 
+/**
+ * Guards the two report timestamps only. ::en2m_report_schedule is reachable
+ * from any task through en2m_attribute_set(), so a 64-bit timestamp would
+ * otherwise be written non-atomically on a 32-bit target.
+ */
+static portMUX_TYPE s_report_mux = portMUX_INITIALIZER_UNLOCKED;
+
 static int64_t en2m_now_ms(void)
 {
     return esp_timer_get_time() / 1000;
@@ -422,6 +429,7 @@ static esp_err_t en2m_report_transmit(void)
     en2m_event_report_t event = {0};
     char *json = NULL;
     size_t len = 0;
+    int64_t now;
     esp_err_t err;
 
     for (size_t i = 0; i < sizeof(levels) / sizeof(levels[0]); i++) {
@@ -452,8 +460,11 @@ static esp_err_t en2m_report_transmit(void)
     err = en2m_send_uplink(EN2M_MSG_STATE, 0, (const uint8_t *)json, (uint8_t)len);
     cJSON_free(json);
 
-    s_model.last_report_ms = en2m_now_ms();
+    now = en2m_now_ms();
+    portENTER_CRITICAL(&s_report_mux);
+    s_model.last_report_ms = now;
     s_model.next_report_ms = 0;
+    portEXIT_CRITICAL(&s_report_mux);
 
     event.length = (uint16_t)len;
     event.err = err;
@@ -483,6 +494,7 @@ esp_err_t en2m_report_schedule(uint32_t delay_ms)
         return ESP_ERR_INVALID_STATE;
     }
 
+    portENTER_CRITICAL(&s_report_mux);
     floor_ms = s_model.last_report_ms + s_model.cfg.min_report_interval_ms;
     when = now + (int64_t)delay_ms;
     if (when < floor_ms) {
@@ -491,6 +503,7 @@ esp_err_t en2m_report_schedule(uint32_t delay_ms)
     if (s_model.next_report_ms == 0 || when < s_model.next_report_ms) {
         s_model.next_report_ms = when;
     }
+    portEXIT_CRITICAL(&s_report_mux);
     return ESP_OK;
 }
 
@@ -513,9 +526,15 @@ void en2m_model_on_change(const en2m_attr_path_t *path, const en2m_value_t *valu
 
 void en2m_model_on_link_change(bool has_parent)
 {
-    if (has_parent && s_model.started) {
-        s_model.next_report_ms = en2m_now_ms() + 200;
+    int64_t when;
+
+    if (!has_parent || !s_model.started) {
+        return;
     }
+    when = en2m_now_ms() + 200;
+    portENTER_CRITICAL(&s_report_mux);
+    s_model.next_report_ms = when;
+    portEXIT_CRITICAL(&s_report_mux);
 }
 
 /* ---- command handling ---- */
@@ -1026,6 +1045,8 @@ static void en2m_model_identify_tick(int64_t now_ms)
 
 void en2m_model_tick(int64_t now_ms)
 {
+    int64_t last_report;
+    int64_t next_report;
     bool periodic_due;
 
     if (!s_model.started) {
@@ -1039,11 +1060,16 @@ void en2m_model_tick(int64_t now_ms)
         en2m_dm_flush_persist();
     }
 
+    portENTER_CRITICAL(&s_report_mux);
+    last_report = s_model.last_report_ms;
+    next_report = s_model.next_report_ms;
+    portEXIT_CRITICAL(&s_report_mux);
+
     periodic_due = (s_model.cfg.report_mode == EN2M_REPORT_DEFAULT ||
                     s_model.cfg.report_mode == EN2M_REPORT_PERIODIC_ONLY) &&
-                   (now_ms - s_model.last_report_ms >= (int64_t)s_model.cfg.report_interval_ms);
+                   (now_ms - last_report >= (int64_t)s_model.cfg.report_interval_ms);
 
-    if (periodic_due || (s_model.next_report_ms != 0 && now_ms >= s_model.next_report_ms)) {
+    if (periodic_due || (next_report != 0 && now_ms >= next_report)) {
         en2m_dm_refresh();
         en2m_report_transmit();
     }
@@ -1085,6 +1111,7 @@ static void en2m_model_apply_persisted(void)
 esp_err_t en2m_start(const en2m_device_config_t *config)
 {
     en2m_device_config_t cfg;
+    int64_t now;
 
     ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG, "config is NULL");
     ESP_RETURN_ON_FALSE(!s_model.started, ESP_ERR_INVALID_STATE, TAG, "already started");
@@ -1105,10 +1132,13 @@ esp_err_t en2m_start(const en2m_device_config_t *config)
     en2m_dm_restore();
     en2m_model_apply_persisted();
 
-    s_model.last_report_ms = en2m_now_ms();
-    s_model.last_persist_ms = s_model.last_report_ms;
+    now = en2m_now_ms();
+    portENTER_CRITICAL(&s_report_mux);
+    s_model.last_report_ms = now;
+    s_model.next_report_ms = now + 500; /* let the parent search finish first */
+    portEXIT_CRITICAL(&s_report_mux);
+    s_model.last_persist_ms = now;
     s_model.started = true;
-    s_model.next_report_ms = s_model.last_report_ms + 500;
 
     en2m_event_post(EN2M_EVENT_STARTED, NULL, 0);
     return ESP_OK;

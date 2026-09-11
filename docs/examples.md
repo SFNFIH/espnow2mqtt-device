@@ -3,6 +3,10 @@
 示例在仓库根目录 **`examples/`**，一个目录一个独立 ESP-IDF 工程。
 参考驱动在 **`drivers/`**，被多个示例共享。
 
+> **这篇讲"为什么这么写"。** 想知道"怎么跑起来"——接线、烧写、
+> 在 HA 里出什么实体、怎么换成真硬件——看每个示例目录里自己的 README，
+> 入口是 [examples/README.md](../examples/README.md)。
+
 十一个示例不是十一个"功能演示"，而是**十一种把硬件接到这个库上的姿势**。
 选示例的时候不要只看设备类型像不像，要看**回调组合**像不像——
 那个才是你要抄的东西。
@@ -47,7 +51,7 @@ idf.py -p /dev/ttyACM0 flash monitor
 
 ## `relay_switch`
 
-**`examples/relay_switch`** — 最应该第一个读的示例。79 行，把这个库的核心思想全讲完了。
+**`examples/relay_switch`** — 最应该第一个读的示例。78 行，把这个库的核心思想全讲完了。
 
 硬件：`PIN_RELAY = GPIO5` 继电器，`PIN_BUTTON = GPIO9` 按键（板载 BOOT 键）。
 用 `drivers/drv_gpio_relay.c` 和 `drivers/drv_gpio_button.c`。

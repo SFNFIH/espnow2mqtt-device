@@ -202,12 +202,16 @@ idf.py build flash
 
 ```
 components/en2m/              # 核心组件（库）
-examples/                     # 11 个示例工程
+examples/                     # 11 个示例工程，每个目录里有自己的 README
 drivers/                      # 参考驱动
 firmware/router/              # 常电路由
 docs/
 protocol/PROTOCOL.md
 ```
+
+**每个示例目录里都有一份 README**，讲这一个示例怎么接线、怎么烧、
+在 HA 里出什么实体、怎么换成真硬件。
+选示例先看 [examples/README.md](examples/README.md) 的选型表。
 
 ---
 
@@ -220,6 +224,7 @@ protocol/PROTOCOL.md
 |---|---|
 | 先跑起来，看到 HA 里出实体 | [docs/quickstart.md](docs/quickstart.md) |
 | **从零写一个自己的设备** | [docs/usage.md](docs/usage.md) |
+| 挑一个示例开始改 | [examples/README.md](examples/README.md)（选型表 + 每个示例自己的 README） |
 | 照着现成示例改 | [docs/examples.md](docs/examples.md) |
 | 搞懂整体架构和分层取舍 | [docs/architecture.md](docs/architecture.md) |
 | **搞懂状态怎么流转**（启动、上报、命令、入网） | [docs/state-flow.md](docs/state-flow.md) |

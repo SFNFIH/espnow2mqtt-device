@@ -43,6 +43,7 @@ void app_main(void)
 |---|---|
 | 先跑起来、看到 HA 里出实体 | [quickstart.md](quickstart.md) |
 | 知道接线和引脚 | [wiring.md](wiring.md) |
+| **挑一个示例开始改** | [../examples/README.md](../examples/README.md)（选型表；每个示例目录里还有自己的 README） |
 | 照着现成示例改 | [examples.md](examples.md) |
 | **从零写一个自己的设备** | [usage.md](usage.md) |
 | 搞懂整体架构、为什么这么分层 | [architecture.md](architecture.md) |
@@ -66,9 +67,11 @@ void app_main(void)
 **只想做个设备（90% 的人）**
 
 1. [quickstart.md](quickstart.md) 把示例烧进去，确认 HA 里能看到
-2. [examples.md](examples.md) 找一个最像你需求的示例
-3. [usage.md](usage.md) 照着五步改成你的设备
-4. 卡住了查 [callbacks.md](callbacks.md) 和 [api-reference.md](api-reference.md)
+2. [../examples/README.md](../examples/README.md) 按选型表挑一个最像的，
+   读它目录里的 README（怎么接线、怎么烧、怎么换真硬件）
+3. [examples.md](examples.md) 想知道"为什么这么写"再看这篇逐行精讲
+4. [usage.md](usage.md) 照着五步改成你的设备
+5. 卡住了查 [callbacks.md](callbacks.md) 和 [api-reference.md](api-reference.md)
 
 **想改库 / 想搞懂内部**
 

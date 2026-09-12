@@ -48,9 +48,8 @@ static void app_task(void *arg)
         int btn = gpio_get_level(PIN_BUTTON);
         en2m_model_loop();                            /* ← 应用负责泵组件 */
         if (last_btn == 1 && btn == 0) {
-            bool on = false;
-            drv_gpio_relay_get(&on, NULL);
-            drv_gpio_relay_set(!on, NULL);            /* ← 应用直接改硬件 */
+            s_relay_on = !s_relay_on;
+            gpio_set_level(PIN_RELAY, s_relay_on);    /* ← 应用直接改硬件 */
             en2m_model_notify(1, EN2M_CLUSTER_ON_OFF, true);  /* ← 再告诉组件 */
             vTaskDelay(pdMS_TO_TICKS(40));            /* ← 手写消抖 */
         }
@@ -65,12 +64,12 @@ void app_main(void)
     en2m_config_t mesh = {.role = EN2M_ROLE_LEAF, .name = "relay1", .model = "ex-switch"};
 
     ESP_ERROR_CHECK(nvs_flash_init());
-    ESP_ERROR_CHECK(drv_gpio_relay_init(GPIO_NUM_5, true));
+    ESP_ERROR_CHECK(relay_init());
 
     ep = en2m_endpoint_create(1);
     ESP_ERROR_CHECK(en2m_endpoint_add_on_off(ep, &(en2m_on_off_driver_t){
-                                                     .set = drv_gpio_relay_set,
-                                                     .get = drv_gpio_relay_get,
+                                                     .set = relay_set,
+                                                     .get = relay_get,
                                                  }));
 
     ESP_ERROR_CHECK(en2m_model_start(&mesh));
@@ -83,10 +82,10 @@ void app_main(void)
 ```c
 static esp_err_t on_write(const en2m_attr_path_t *path, const en2m_value_t *value, void *ctx)
 {
-    if (path->cluster_id == EN2M_CLUSTER_ON_OFF) {
-        return drv_gpio_relay_set(value->v.b, ctx);
+    if (path->cluster_id != EN2M_CLUSTER_ON_OFF) {
+        return ESP_ERR_NOT_SUPPORTED;
     }
-    return ESP_ERR_NOT_SUPPORTED;
+    return gpio_set_level(PIN_RELAY, value->v.b == RELAY_ACTIVE_HIGH);
 }
 
 static void toggle(void *arg)                          /* 跑在 en2m 任务上 */
@@ -99,13 +98,9 @@ static void toggle(void *arg)                          /* 跑在 en2m 任务上 
     en2m_attribute_write(ENDPOINT, EN2M_CLUSTER_ON_OFF, EN2M_ATTR_ON_OFF, en2m_bool(!current.v.b));
 }
 
-static void on_button(void *ctx)                       /* 在 ISR 上 */
+static void on_button(void *button_handle, void *usr_data)   /* 任务上下文 */
 {
-    BaseType_t woken = pdFALSE;
-    en2m_schedule_from_isr(toggle, NULL, &woken);
-    if (woken) {
-        portYIELD_FROM_ISR();
-    }
+    en2m_schedule(toggle, NULL);
 }
 
 void app_main(void)
@@ -115,8 +110,8 @@ void app_main(void)
         .attribute_write = on_write,
     };
 
-    ESP_ERROR_CHECK(drv_gpio_relay_init(PIN_RELAY, true));
-    ESP_ERROR_CHECK(drv_gpio_button_init(PIN_BUTTON, true, 40, on_button, NULL));
+    ESP_ERROR_CHECK(relay_init());                     /* gpio_config */
+    ESP_ERROR_CHECK(button_init());                    /* espressif/button */
 
     if (en2m_endpoint_create_device(ENDPOINT, EN2M_DEVICE_TYPE_ON_OFF_PLUG) == NULL) {
         return;
@@ -308,7 +303,7 @@ en2m_cluster_set_write_cb(c, on_fan_write, &s_fan);   /* ← 最接近旧 ops �
 ### 第 6 步：`en2m_model_notify` → `en2m_attribute_set`
 
 ```c
-- drv_gpio_relay_set(!on, NULL);
+- gpio_set_level(PIN_RELAY, !on);
 - en2m_model_notify(1, EN2M_CLUSTER_ON_OFF, true);
 + en2m_attribute_write(1, EN2M_CLUSTER_ON_OFF, EN2M_ATTR_ON_OFF, en2m_bool(!on));
 ```

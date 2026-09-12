@@ -234,24 +234,30 @@ void app_main(void)
 特征：远程能控，本地按键也能控，断电后状态要恢复。
 
 ```c
+/* main/idf_component.yml:
+ *   dependencies:
+ *     espressif/button: "^4.2.1"
+ */
+#include "button_gpio.h"
+#include "driver/gpio.h"
 #include "en2m.h"
 #include "esp_log.h"
-#include "drv_gpio_relay.h"
-#include "drv_gpio_button.h"
+#include "iot_button.h"
 
 #define ENDPOINT   1
 #define PIN_RELAY  GPIO_NUM_5
 #define PIN_BUTTON GPIO_NUM_9
+#define RELAY_ACTIVE_HIGH true
 
 static const char *TAG = "relay";
 
 /* 全固件唯一一处碰继电器的地方 */
 static esp_err_t on_write(const en2m_attr_path_t *path, const en2m_value_t *value, void *ctx)
 {
-    if (path->cluster_id == EN2M_CLUSTER_ON_OFF) {
-        return drv_gpio_relay_set(value->v.b, ctx);
+    if (path->cluster_id != EN2M_CLUSTER_ON_OFF) {
+        return ESP_ERR_NOT_SUPPORTED;
     }
-    return ESP_ERR_NOT_SUPPORTED;
+    return gpio_set_level(PIN_RELAY, value->v.b == RELAY_ACTIVE_HIGH);
 }
 
 /* 跑在 en2m 任务上，可以用全部 API */
@@ -266,13 +272,11 @@ static void toggle(void *arg)
     en2m_attribute_write(ENDPOINT, EN2M_CLUSTER_ON_OFF, EN2M_ATTR_ON_OFF, en2m_bool(!cur.v.b));
 }
 
-static void on_button(void *ctx)          /* 在 ISR 上下文 */
+/* espressif/button 在共享 esp_timer 上轮询消抖，所以这里是任务上下文，
+ * 不是 ISR。回调只派活，不干活。 */
+static void on_button(void *button_handle, void *usr_data)
 {
-    BaseType_t woken = pdFALSE;
-    en2m_schedule_from_isr(toggle, NULL, &woken);
-    if (woken) {
-        portYIELD_FROM_ISR();
-    }
+    en2m_schedule(toggle, NULL);
 }
 
 void app_main(void)
@@ -282,8 +286,15 @@ void app_main(void)
         .attribute_write = on_write,
     };
 
-    ESP_ERROR_CHECK(drv_gpio_relay_init(PIN_RELAY, true));
-    ESP_ERROR_CHECK(drv_gpio_button_init(PIN_BUTTON, true, 40, on_button, NULL));
+    const gpio_config_t io = {.pin_bit_mask = 1ULL << PIN_RELAY, .mode = GPIO_MODE_OUTPUT};
+    const button_config_t btn_cfg = {0};
+    const button_gpio_config_t gpio_cfg = {.gpio_num = PIN_BUTTON, .active_level = 0};
+    button_handle_t btn = NULL;
+
+    ESP_ERROR_CHECK(gpio_config(&io));
+    ESP_ERROR_CHECK(gpio_set_level(PIN_RELAY, !RELAY_ACTIVE_HIGH));
+    ESP_ERROR_CHECK(iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, &btn));
+    ESP_ERROR_CHECK(iot_button_register_cb(btn, BUTTON_SINGLE_CLICK, NULL, on_button, NULL));
 
     if (en2m_endpoint_create_device(ENDPOINT, EN2M_DEVICE_TYPE_ON_OFF_PLUG) == NULL) {
         return;
@@ -294,13 +305,19 @@ void app_main(void)
 
 关键点：
 
-- 本地按键**不直接调驱动**，而是走 `en2m_attribute_write`。这样本地和远程是
+- 本地按键**不直接碰 GPIO**，而是走 `en2m_attribute_write`。这样本地和远程是
   同一条路径，状态一定一致，也一定会上报。
-- ISR 里只能调 `*_from_isr` 系列。`en2m_schedule_from_isr` 把活挪到 `en2m` 任务，
-  在那里可以随便用阻塞 API。上下文规则全表见
+- 按键驱动来自
+  [`espressif/button`](https://components.espressif.com/components/espressif/button)，
+  消抖和手势识别都是现成的。它的回调在**任务上下文**（组件在一个共享的
+  esp_timer 上轮询），所以用 `en2m_schedule`；
+  自己写 GPIO 中断才需要 `en2m_schedule_from_isr` + `portYIELD_FROM_ISR()`。
+  上下文规则全表见
   [concurrency.md](concurrency.md#6-每个公开-api-的可调用上下文)。
+- 继电器直接用内置 `driver` 的 GPIO 输出，因为一个引脚一个电平没什么可抽象的。
 - `EN2M_DEVICE_TYPE_ON_OFF_PLUG` 的 `OnOff` 属性默认 `persist = true`，
-  所以重启后 `en2m_start` 会自动把上次的状态写回继电器。
+  所以重启后 `en2m_start` 会自动把上次的状态写回继电器——
+  这也是 `gpio_config` 必须在 `en2m_start` 之前的原因。
 
 ### 配方 B — 拉取型传感器（I2C / 一线 / ADC）
 
@@ -310,18 +327,14 @@ void app_main(void)
 static esp_err_t on_read(const en2m_attr_path_t *path, en2m_value_t *out, void *ctx)
 {
     switch (path->cluster_id) {
-    case EN2M_CLUSTER_TEMPERATURE_MEASUREMENT: {
-        int16_t centi_c = 0;
-        ESP_RETURN_ON_ERROR(drv_dht_get_temperature(&centi_c, ctx), TAG, "temp");
-        *out = en2m_i16(centi_c);        /* 0.01 °C */
+    case EN2M_CLUSTER_TEMPERATURE_MEASUREMENT:
+        ESP_RETURN_ON_ERROR(sample(), TAG, "temp");
+        *out = en2m_i16((int16_t)(s_sample.celsius * 100.0f));   /* 0.01 °C */
         return ESP_OK;
-    }
-    case EN2M_CLUSTER_RELATIVE_HUMIDITY: {
-        uint16_t centi_pct = 0;
-        ESP_RETURN_ON_ERROR(drv_dht_get_humidity(&centi_pct, ctx), TAG, "hum");
-        *out = en2m_u16(centi_pct);      /* 0.01 %RH */
+    case EN2M_CLUSTER_RELATIVE_HUMIDITY:
+        ESP_RETURN_ON_ERROR(sample(), TAG, "hum");
+        *out = en2m_u16((uint16_t)(s_sample.humidity * 100.0f)); /* 0.01 %RH */
         return ESP_OK;
-    }
     default:
         return ESP_ERR_NOT_SUPPORTED;    /* 保留缓存值 */
     }
@@ -334,10 +347,10 @@ void app_main(void)
         .mesh = {.role = EN2M_ROLE_LEAF, .name = "th1", .model = "my-th"},
         .attribute_read = on_read,
         .report_interval_ms     = 60000,  /* 一分钟一次就够 */
-        .min_report_interval_ms = 5000,   /* DHT22 最快 2 秒一次，留足余量 */
+        .min_report_interval_ms = 5000,   /* 顺手压住传感器自热 */
     };
 
-    ESP_ERROR_CHECK(drv_dht_init(PIN_DHT, 22));
+    ESP_ERROR_CHECK(sensor_init());       /* I²C 总线 + aht20_new_sensor */
 
     ep = en2m_endpoint_create(ENDPOINT);
     ESP_ERROR_CHECK(en2m_endpoint_add_device_type(ep, EN2M_DEVICE_TYPE_TEMPERATURE_SENSOR));
@@ -354,6 +367,11 @@ void app_main(void)
   把它设进去，不需要在驱动里再加一层节流。
 - 读回调**跑在 `en2m` 任务上**，可以放心做阻塞 I2C。但不要超过一两百毫秒，
   否则会拖慢维护节拍（心跳、重传都在同一个任务上）。
+  超过这个量级有三种解法，见
+  [examples.md](examples.md#bh1750-跑连续模式读回调才不会阻塞)。
+- `on_read` 是**每个属性调一次**的。一次转换出多个值的器件（AHT20）
+  要在应用侧加一层短缓存，`sample()` 就是干这个的，
+  否则一轮上报会测两遍、两个数还来自不同时刻。
 - 返回错误（不是 `NOT_SUPPORTED`）时组件保留上一次的缓存值继续上报，
   不会把设备变成"无数据"。
 
@@ -361,65 +379,74 @@ void app_main(void)
 
 特征：状态自己变，变了就要马上上报。
 
+干簧管、PIR、限位开关在电路上都是一个按键，所以都用
+[`espressif/button`](https://components.espressif.com/components/espressif/button)，
+把两个边沿都注册上。
+
 ```c
-/* 兜底：周期上报前重读一次真实电平，能自愈"丢了一次中断"的卡死 */
+/* main/idf_component.yml: espressif/button: "^4.2.1" */
+static button_handle_t s_contact;
+
+static bool contact_is_open(void)
+{
+    return iot_button_get_key_level(s_contact) == BUTTON_ACTIVE;
+}
+
+/* 兜底：周期上报前重读一次真实电平，能自愈"丢了一帧"的卡死 */
 static esp_err_t on_read(const en2m_attr_path_t *path, en2m_value_t *out, void *ctx)
 {
-    bool open = false;
-
     if (path->cluster_id != EN2M_CLUSTER_BOOLEAN_STATE) {
         return ESP_ERR_NOT_SUPPORTED;
     }
-    if (drv_gpio_contact_get(&open, ctx) != ESP_OK) {
-        return ESP_FAIL;                 /* 保留缓存值 */
-    }
-    *out = en2m_bool(open);
+    *out = en2m_bool(contact_is_open());
     return ESP_OK;
 }
 
 /* 跑在 en2m 任务上：可以做阻塞读，可以用全部 API */
 static void publish_contact(void *arg)
 {
-    bool open = false;
-
-    if (drv_gpio_contact_get(&open, NULL) == ESP_OK) {
-        en2m_report_boolean_state(ENDPOINT, open);
-    }
+    en2m_report_boolean_state(ENDPOINT, contact_is_open());
 }
 
-static void on_contact_edge(void *arg)   /* ISR 上下文 */
+/* 任务上下文（组件在共享 esp_timer 上轮询消抖），不是 ISR */
+static void on_contact_edge(void *button_handle, void *usr_data)
 {
-    BaseType_t woken = pdFALSE;
-
-    en2m_schedule_from_isr(publish_contact, NULL, &woken);
-    if (woken) {
-        portYIELD_FROM_ISR();
-    }
+    en2m_schedule(publish_contact, NULL);
 }
 
 void app_main(void)
 {
+    const button_config_t btn_cfg = {0};
+    const button_gpio_config_t gpio_cfg = {.gpio_num = PIN_CONTACT, .active_level = 0};
     en2m_device_config_t cfg = {
         .mesh = {.role = EN2M_ROLE_LEAF, .name = "door1", .model = "my-contact"},
         .attribute_read = on_read,
     };
 
-    ESP_ERROR_CHECK(drv_gpio_contact_init(PIN_CONTACT, true /* active_low */));
+    ESP_ERROR_CHECK(iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, &s_contact));
 
     if (en2m_endpoint_create_device(ENDPOINT, EN2M_DEVICE_TYPE_CONTACT_SENSOR) == NULL) {
         return;
     }
 
-    ESP_ERROR_CHECK(drv_gpio_contact_watch(on_contact_edge, NULL));
+    /* 两个边沿挂同一个回调：回调去回读电平，不关心是哪个边沿 */
+    ESP_ERROR_CHECK(iot_button_register_cb(s_contact, BUTTON_PRESS_DOWN, NULL,
+                                           on_contact_edge, NULL));
+    ESP_ERROR_CHECK(iot_button_register_cb(s_contact, BUTTON_PRESS_UP, NULL,
+                                           on_contact_edge, NULL));
     ESP_ERROR_CHECK(en2m_start(&cfg));
 }
 ```
 
-如果电平本身就在 ISR 参数里、不需要回读硬件，可以更短一步到位——用
+**回读而不是取反。** "上次是 ON 那这次就是 OFF"一旦错过一个边沿就永久反相；
+回读则自动纠正，而且在任务里回读还顺手把抖动吃掉了。
+这也是为什么两个边沿能共用一个回调。
+
+如果你的事件源是真 ISR 而且电平就在参数里，可以更短一步到位——用
 `en2m_attribute_set_from_isr` 直接把值交给组件，连 `en2m_schedule` 都省了：
 
 ```c
-static void on_edge(void *arg)
+static void on_edge(void *arg)          /* 真 ISR */
 {
     BaseType_t woken = pdFALSE;
 
@@ -429,15 +456,6 @@ static void on_edge(void *arg)
     if (woken) {
         portYIELD_FROM_ISR();
     }
-}
-```
-
-事件源不是中断而是定时器或别的任务时，直接调便捷函数就行，不需要 `_from_isr`：
-
-```c
-static void on_pir_timer(void *arg)     /* esp_timer 任务上下文 */
-{
-    en2m_report_occupancy(ENDPOINT, pir_read());
 }
 ```
 

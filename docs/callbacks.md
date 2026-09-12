@@ -145,12 +145,13 @@ typedef esp_err_t (*en2m_attribute_read_cb_t)(const en2m_attr_path_t *path,
 static esp_err_t on_read(const en2m_attr_path_t *path, en2m_value_t *out, void *ctx)
 {
     float t, h;
+    uint32_t t_raw, h_raw;
 
     if (path->cluster_id != EN2M_CLUSTER_TEMPERATURE_MEASUREMENT &&
         path->cluster_id != EN2M_CLUSTER_RELATIVE_HUMIDITY) {
         return ESP_ERR_NOT_SUPPORTED;
     }
-    if (drv_dht_read(&t, &h) != ESP_OK) {
+    if (aht20_read_temperature_humidity(s_aht20, &t_raw, &t, &h_raw, &h) != ESP_OK) {
         return ESP_ERR_NOT_SUPPORTED;      /* 保留上次的好读数 */
     }
     *out = (path->cluster_id == EN2M_CLUSTER_TEMPERATURE_MEASUREMENT)
@@ -163,9 +164,11 @@ static esp_err_t on_read(const en2m_attr_path_t *path, en2m_value_t *out, void *
 ### 会被调很多次
 
 `en2m_dm_refresh` 遍历**每一个已建的属性**。一个温湿度设备有两个属性，
-所以每轮上报你的回调会被调两次，路径不同。上面的写法对同一个传感器
-读了两遍——DHT22 那 2 秒的最小间隔靠驱动内部缓存或者
-`min_report_interval_ms` 兜住。要更精细就自己缓存：
+所以每轮上报你的回调会被调两次，路径不同。
+
+上面那种写法对同一个传感器**读了两遍**，而 AHT20 一次转换本来就同时给出
+温度和湿度。两遍不只是浪费 80 ms，还意味着同一条上报里的两个数
+来自不同时刻。加一层时间戳缓存就解决了：
 
 ```c
 static struct { int64_t at_ms; float t, h; } s_cache;
@@ -173,16 +176,23 @@ static struct { int64_t at_ms; float t, h; } s_cache;
 static bool sample_if_stale(void)
 {
     int64_t now = esp_timer_get_time() / 1000;
-    if (now - s_cache.at_ms < 2000) {
-        return true;                        /* 缓存还新鲜 */
+    uint32_t t_raw, h_raw;
+
+    if (s_cache.at_ms != 0 && now - s_cache.at_ms < 2000) {
+        return true;                        /* 缓存还新鲜，复用 */
     }
-    if (drv_dht_read(&s_cache.t, &s_cache.h) != ESP_OK) {
+    if (aht20_read_temperature_humidity(s_aht20, &t_raw, &s_cache.t,
+                                        &h_raw, &s_cache.h) != ESP_OK) {
         return false;
     }
     s_cache.at_ms = now;
     return true;
 }
 ```
+
+顺带一个好处：这样写**不依赖属性被遍历的顺序**。谁先被问到谁去测，
+另一个复用缓存，两种顺序结果都一样。
+`th_sensor` 示例就是这么做的。
 
 ### 上下文
 

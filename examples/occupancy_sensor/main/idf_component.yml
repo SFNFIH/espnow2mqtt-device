@@ -1,0 +1,6 @@
+dependencies:
+  idf: ">=5.0"
+  # https://components.espressif.com/components/espressif/bh1750
+  espressif/bh1750: "^2.0.0"
+  # https://components.espressif.com/components/espressif/button
+  espressif/button: "^4.2.1"

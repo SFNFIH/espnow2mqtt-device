@@ -28,7 +28,7 @@
 void app_main(void)
 {
     /* ① 先初始化你自己的硬件 */
-    ESP_ERROR_CHECK(drv_gpio_relay_init(PIN_RELAY, true));
+    ESP_ERROR_CHECK(relay_init());          /* gpio_config + 拉到安全电平 */
 
     /* ② 再建数据模型（必须在 en2m_start 之前） */
     en2m_endpoint_create_device(1, EN2M_DEVICE_TYPE_ON_OFF_PLUG);
@@ -245,8 +245,9 @@ GPIO 边沿                                                          [isr]
 static esp_err_t on_read(const en2m_attr_path_t *path, en2m_value_t *out, void *ctx)
 {
     if (path->cluster_id == EN2M_CLUSTER_TEMPERATURE_MEASUREMENT) {
-        float t;
-        if (drv_dht_read(&t, NULL) != ESP_OK) {
+        float t, rh;
+        uint32_t t_raw, rh_raw;
+        if (aht20_read_temperature_humidity(s_aht20, &t_raw, &t, &rh_raw, &rh) != ESP_OK) {
             return ESP_ERR_NOT_SUPPORTED;   /* 保留上次的缓存值 */
         }
         *out = en2m_i16((int16_t)(t * 100));
@@ -258,8 +259,14 @@ static esp_err_t on_read(const en2m_attr_path_t *path, en2m_value_t *out, void *
 
 **关键**：`en2m_dm_refresh` 是**每次上报前**跑的，不是每个 tick 跑。
 采样频率因此等于上报频率，由 `report_interval_ms` 和 `min_report_interval_ms` 控制。
-DHT22 有 2 秒最小采样间隔的硬约束，所以 `th_sensor` 示例把
-`min_report_interval_ms` 设成 5000。
+传感器读得太勤会自热（AHT20 连续测量时芯片温度会高出零点几度），
+所以 `th_sensor` 示例把 `min_report_interval_ms` 设成 5000。
+
+注意 `on_read` 是**每个属性调一次**的。一次转换同时给出多个值的器件
+（AHT20 的温度 + 湿度）要在应用侧做一层短缓存，
+否则一轮上报会测两遍，而且两个数来自不同时刻。
+`th_sensor` 的做法见
+[examples.md](examples.md#一次测量供两个属性用)。
 
 ### 3.3 上报组装与发送
 
@@ -435,9 +442,9 @@ endpoint_id == 0 ？ → en2m_model_endpoint_with(cluster_id)
 让它走和远程命令完全相同的那条路：
 
 ```
-按键中断                                                            [isr]
+按键回调                                        [espressif/button 的 esp_timer]
 │
-├─ en2m_schedule_from_isr(toggle, NULL, &woken)
+├─ en2m_schedule(toggle, NULL)
 │    → EN2M_ITEM_WORK 入队
 │
 ▼ ······················· 队列 ·······················
@@ -451,9 +458,15 @@ endpoint_id == 0 ？ → en2m_model_endpoint_with(cluster_id)
 └─ HA 里的开关跟着翻，因为走的是同一条路
 ```
 
-这就是 `examples/relay_switch` 的全部逻辑。**直接调 `drv_gpio_relay_set()`
-是反模式**：硬件变了但属性存储不知道，HA 会一直显示旧状态，
-而且下次远程命令会从错的状态开始 toggle。
+这就是 `examples/relay_switch` 的全部逻辑。**在按键回调里直接
+`gpio_set_level()` 是反模式**：硬件变了但属性存储不知道，
+HA 会一直显示旧状态，而且下次远程命令会从错的状态开始 toggle。
+
+上图用的是 `en2m_schedule` 而不是 `en2m_schedule_from_isr`，
+因为 `espressif/button` 在一个 esp_timer 上轮询消抖，回调跑在任务上下文。
+自己写 GPIO 中断的话就要换成 `_from_isr` 版本并处理
+`higher_prio_task_woken`。两者的区别只在入队那一步，
+队列之后的流程完全相同。
 
 ---
 

@@ -442,7 +442,7 @@ en2m_device_config_t cfg = {
 | 场景 | `report_mode` | `report_interval_ms` | `min_report_interval_ms` |
 |---|---|---|---|
 | 开关 / 灯 / 锁（执行器） | `DEFAULT` | 0（默认 30 s） | 0（默认 1 s） |
-| 温湿度（DHT22，2 s 硬限制） | `DEFAULT` | 60000 | 5000 |
+| 温湿度（AHT20，避免自热） | `DEFAULT` | 60000 | 5000 |
 | 温湿度（I2C，可快读） | `DEFAULT` | 30000 | 2000 |
 | 门磁 / PIR（要求低延迟） | `DEFAULT` | 0 | **200** |
 | 计量插座（功率一直在动） | `DEFAULT` | 15000 | 5000 |

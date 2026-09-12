@@ -1,0 +1,5 @@
+dependencies:
+  idf: ">=5.0"
+  # https://components.espressif.com/components/espressif/aht20
+  # Pulls in espressif/i2c_bus as a public dependency.
+  espressif/aht20: "^2.0.0"

@@ -9,7 +9,7 @@
 | Cluster | OnOff (`0x0006`) + Level Control (`0x0008`) + Color Control (`0x0300`) + Identify (`0x0003`) |
 | 设备类型 | `EN2M_DEVICE_TYPE_COLOR_TEMPERATURE_LIGHT` |
 | 回调 | `attribute_write` + `identify` |
-| 驱动 | 无（示例里是内存 stub） |
+| 外设组件 | [`espressif/led_strip`](https://components.espressif.com/components/espressif/led_strip) `^3.0.3`（RMT 后端） |
 | 默认名 / slug | `light1` |
 | HA 实体 | `light.light1` |
 
@@ -17,12 +17,36 @@
 
 ## 接线
 
-**这个示例不接任何硬件。** `light_apply()` 就是一行 `ESP_LOGI`，
-把当前的开关 / 亮度 / 色温打到串口上。
+**默认配置不用接任何线。** `PIN_STRIP` 是 `GPIO_NUM_8`，
+也就是 ESP32-C3-DevKitM-1 和 DevKitC-02 上**板载的那颗 WS2812**，
+烧进去就能看到它亮起来。
 
-这么写是故意的：你可以先把 HA → MQTT → ESP-NOW → 回调这条链路跑通，
-确认亮度滑块推过来的数值是对的，再去接 LEDC 或者 LED 驱动 IC。
-"换成真硬件"一节给了 LEDC 的完整写法。
+要接外接灯带：
+
+| GPIO | 接什么 | 说明 |
+|---|---|---|
+| **8** | 灯带 `DIN` | 串一个 220–470 Ω 电阻，抑制反射 |
+| 5 V | 灯带 `VCC` | **不要从开发板的 5 V 取电**，见下面 |
+| GND | 灯带 `GND` | 必须和 C3 共地 |
+
+改 `main/main.c` 顶部两行就换引脚和灯珠数量：
+
+```c
+#define PIN_STRIP GPIO_NUM_8
+#define STRIP_LEDS 1
+```
+
+`STRIP_LEDS` 改成多少，整条灯带就同色一起变。
+换引脚前先看 [docs/wiring.md](../../docs/wiring.md#esp32-c3-引脚选择须知)。
+
+> **供电是 WS2812 最常见的坑。** 一颗灯珠满白约 60 mA，
+> 30 颗就是 1.8 A —— 远超开发板 USB 口能给的。
+> 超过 8 颗就该用独立 5 V 电源，只把 GND 和数据线接回 C3。
+> 电源不够的典型症状是灯带尾部发红、C3 反复重启。
+
+> **3.3 V 电平驱动 5 V 灯带**在短线上一般能用，长线或者整条不亮的话
+> 需要一片电平转换（74AHCT125 之类）。
+> WS2812B 的数据线阈值是 `0.7 × VDD`，也就是 3.5 V，C3 的 3.3 V 是踩在边上的。
 
 ---
 
@@ -34,6 +58,10 @@ cd examples/dimmable_light
 idf.py set-target esp32c3
 idf.py build flash monitor -p /dev/ttyACM0
 ```
+
+第一次 `build` 会联网把 `espressif/led_strip` 下载到本工程的
+`managed_components/`，不需要手动装。依赖写在
+[`main/idf_component.yml`](main/idf_component.yml) 里。
 
 ---
 
@@ -58,8 +86,11 @@ mosquitto_pub -t espnow2mqtt/light1/set -m '{"color_temp":370}'
 串口上每条都会打出一行完整状态：
 
 ```
-I (12043) ex_light: output: on level=128 mireds=370
+I (12043) ex_light: output: on level=128 mireds=370 rgb=64,48,33
 ```
+
+`rgb=` 是色温和亮度一起算完之后**真正推给灯珠**的值，
+调不出想要的颜色时先看这一行，就知道是数据模型侧的问题还是转换的问题。
 
 ### `caps` 里为什么没有 `switch`
 
@@ -88,7 +119,6 @@ HA 的色温滑块两头显示的是开尔文（集成里限死 2000–6500 K）
 
 亮度也一样：HA 内部是 0–255，集成负责按 `× 254 / 255` 换成 Matter 的 0–254，
 所以固件收到的永远是 0–254。照抄这个范围能省掉一层映射。
-接 LEDC 的时候记得**自己缩放到占空比范围**，见下文。
 
 ---
 
@@ -127,9 +157,54 @@ en2m_cluster_create(ep, EN2M_CLUSTER_IDENTIFY);
 
 ---
 
-## 换成真硬件
+## 色温怎么变成 RGB
+
+WS2812 的灯珠是 RGB 三色，而 Matter 的数据模型说的是**迈尔德**。
+中间那一步转换是这个示例唯一真正有内容的代码：
+
+```c
+static const struct { uint16_t kelvin; uint8_t r, g, b; } s_blackbody[] = {
+    {2000, 255, 141, 11},  {2500, 255, 165, 71},  {3000, 255, 180, 107},
+    ...
+    {6500, 255, 249, 253},
+};
+```
+
+这是一张**黑体辐射表**，从 2000 K 到 6500 K 每 500 K 一个点，
+中间线性插值。范围挑得和 HA 的色温滑块（154–500 迈尔德）完全对上，
+所以滑块推到两头都有对应的颜色，不会截断。
+
+注意红色分量**全程都是 255**，只有绿和蓝在动。
+这不是表做得糙——真实的黑体在这个温度区间里就是这样，
+"暖"就是把绿蓝压下去，"冷"就是把它们补上来。
+
+### gamma 只加在亮度上
+
+```c
+gamma_level = (uint32_t)s_light.level * s_light.level / 254u;
+r = (uint8_t)((uint32_t)r * gamma_level / 254u);
+g = (uint8_t)((uint32_t)g * gamma_level / 254u);
+b = (uint8_t)((uint32_t)b * gamma_level / 254u);
+```
+
+WS2812 的占空比是线性的，人眼不是。直接拿 `level` 去乘三个通道，
+结果是滑块下面一小段看着全黑、上面一大段看着一样亮。
+先把亮度平方（γ≈2.0）再乘，感知上的步进就均匀了。
+
+**关键是 gamma 加在亮度上，而不是分别加在 R/G/B 上。**
+如果三个通道各自做平方，通道之间的**比例**会变
+（255² 和 141² 的比不等于 255 和 141 的比），色温就跟着亮度飘了：
+调暗一点颜色就偏冷。先算好比例、再整体缩放，色温才稳。
+
+---
+
+## 换成别的灯
 
 ### 单色 / 双色温 LED 条（LEDC）
+
+没有 WS2812、只有一路或两路普通 LED 的时候，把
+`main/idf_component.yml` 里的 `espressif/led_strip` 删掉，
+改用 IDF 内置的 LEDC：
 
 ```c
 #include "driver/ledc.h"
@@ -140,10 +215,12 @@ en2m_cluster_create(ep, EN2M_CLUSTER_IDENTIFY);
 
 static void light_apply(void)
 {
-    uint32_t total = s_light.on ? (uint32_t)s_light.level * DUTY_MAX / 254 : 0;
+    uint32_t total = s_light.on ? (uint32_t)s_light.level * s_light.level * DUTY_MAX
+                                      / (254 * 254)
+                                : 0;
 
-    /* 色温 = 两路的配比。153 全冷，500 全暖。 */
-    uint32_t warm_pct = (s_light.mireds - 153) * 100 / (500 - 153);
+    /* 色温 = 两路的配比。154 全冷，500 全暖。 */
+    uint32_t warm_pct = (s_light.mireds - 154) * 100 / (500 - 154);
     ledc_set_duty(LEDC_LOW_SPEED_MODE, CH_WARM, total * warm_pct / 100);
     ledc_set_duty(LEDC_LOW_SPEED_MODE, CH_COLD, total * (100 - warm_pct) / 100);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, CH_WARM);
@@ -151,23 +228,27 @@ static void light_apply(void)
 }
 ```
 
-三件事容易忘：
+两件事容易忘：
 
-1. **PWM 频率要高于 1 kHz**，否则手机摄像头拍过去有频闪条纹，肉眼在余光里也能看到。
-   示例用 5 kHz 比较稳。
-2. **低亮度端要做 gamma 校正。** 占空比和人眼感受不是线性的，
-   线性映射的话 `brightness` 从 1 到 20 看起来几乎没变化，到 200 之后又几乎一样亮。
-   查表或者用 `duty = DUTY_MAX * (level/254)^2.2`。
-3. **`light_apply()` 跑在 en2m 任务上**，所以别在里面做渐变循环。
-   要渐变就起一个 `esp_timer`，在定时器里推进。
+1. **PWM 频率要高于 1 kHz**，否则手机摄像头拍过去有频闪条纹，
+   肉眼在余光里也能看到。5 kHz 比较稳。
+2. **gamma 校正一样要做**，理由和上面那一节完全相同。
 
-### 换 WS2812 / SK6812
+### 支持真彩色
 
-`led_strip` 组件（`idf.py add-dependency espressif/led_strip`）可以直接用。
-色温转 RGB 需要一张色温表，或者用 `led_strip_set_pixel_rgbw` 的 W 通道。
-
-要支持真彩色的话还得加 `EN2M_ATTR_CURRENT_HUE` / `CURRENT_SATURATION`，
+现在这个示例是 `COLOR_TEMPERATURE_LIGHT`，HA 里只给亮度和色温两个滑块。
+要出色盘就得加 `EN2M_ATTR_CURRENT_HUE` / `CURRENT_SATURATION`，
+设备类型换成 `EN2M_DEVICE_TYPE_EXTENDED_COLOR_LIGHT`。
+硬件侧不用改——`led_strip_set_pixel_hsv()` 直接吃 HSV，
+把 `mireds_to_rgb()` 整段删掉就行。
 数据模型侧的改法见 [docs/data-model.md](../../docs/data-model.md)。
+
+### 逐颗寻址
+
+示例里整条灯带同色，因为 Matter 的 Color Control 描述的是"一盏灯"。
+要做流水灯、渐变这类效果，`light_apply()` 里的 `for` 循环改成按 `i` 算颜色即可。
+但**别在 `light_apply()` 里跑动画循环**——它跑在 en2m 任务上，
+一阻塞整个网络就停了。起一个 `esp_timer`，在定时器回调里推进一帧。
 
 ---
 
@@ -179,6 +260,11 @@ static void light_apply(void)
 | 亮度只有 0 和 254 两档 | 你的 `light_apply()` 只看了 `s_light.on` |
 | 拖滑块灯闪一下才到位 | 渐变写在回调里阻塞了，改用 `esp_timer` |
 | 色温反了（冷暖颠倒） | 迈尔德和开尔文是倒数，别把两边搞混 |
+| 灯带整条不亮，串口正常 | 十有八九是数据线电平不够或者没共地 |
+| 只亮第一颗 | `STRIP_LEDS` 还是默认的 `1` |
+| 颜色对不上（红绿互换） | 灯珠的通道顺序不是 GRB。改 `.color_component_format`，SK6812 常见是 `LED_STRIP_COLOR_COMPONENT_FMT_RGB` |
+| 尾部灯珠发红 / 一亮就重启 | 供电不够，见上面接线那一段 |
+| 调暗之后颜色偏冷 | 你把 gamma 分别加到 R/G/B 上了，见上文 |
 | HA 里色温滑块是灰的 | `color_mode` 字段没报出去。序列化时它和 `color_temp` 一起发，缺了说明 Color Control cluster 没建 |
 
 ---

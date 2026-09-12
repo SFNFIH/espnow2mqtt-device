@@ -1,6 +1,6 @@
 # `relay_switch` — 继电器开关
 
-**这个仓库最应该第一个读的示例。** 78 行，把这套库的核心思想全讲完了：
+**这个仓库最应该第一个读的示例。** 112 行，把这套库的核心思想全讲完了：
 远程控制和本地按键走同一条路径，应用代码里没有任务、没有轮询、没有 `while (1)`。
 
 | | |
@@ -8,7 +8,7 @@
 | Cluster | OnOff (`0x0006`) |
 | 设备类型 | `EN2M_DEVICE_TYPE_ON_OFF_PLUG` |
 | 回调 | `attribute_write` + `attribute_changed` |
-| 驱动 | `drv_gpio_relay`、`drv_gpio_button` |
+| 外设组件 | [`espressif/button`](https://components.espressif.com/components/espressif/button) `^4.2.1` + 内置 `driver` 的 GPIO 输出 |
 | 默认名 / slug | `relay1` |
 | HA 实体 | `switch.relay1` |
 
@@ -18,7 +18,7 @@
 
 | GPIO | 接什么 | 说明 |
 |---|---|---|
-| **5** | 继电器模块 `IN` | 高电平有效（`drv_gpio_relay_init(pin, true)`） |
+| **5** | 继电器模块 `IN` | 高电平有效（`#define RELAY_ACTIVE_HIGH true`） |
 | **9** | 按键到 GND | 多数 C3 开发板上就是 **BOOT 键**，不用外接 |
 
 引脚是 `main/main.c` 顶部的 `#define PIN_RELAY` / `#define PIN_BUTTON`，改一行就换。
@@ -43,6 +43,10 @@ idf.py set-target esp32c3
 idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
 ```
+
+第一次 `build` 会联网把 `espressif/button` 下载到本工程的
+`managed_components/`，依赖写在
+[`main/idf_component.yml`](main/idf_component.yml) 里。
 
 信道要和协调器一致，改法见 [examples/README.md](../README.md#通用编译流程)。
 
@@ -80,13 +84,13 @@ mosquitto_pub -t espnow2mqtt/relay1/set -m '{"switch":"ON"}'
 ## 它演示的两条控制方向
 
 ```
-远程：HA → 协调器 → CMD 帧 → en2m 任务 → on_write() → drv_gpio_relay_set()
+远程：HA → 协调器 → CMD 帧 → en2m 任务 → on_write() → gpio_set_level()
                                              └→ 返回 ESP_OK 才提交 + 上报
-本地：按键 ISR → en2m_schedule_from_isr(toggle) → en2m 任务
+本地：按键回调 → en2m_schedule(toggle) → en2m 任务
                                              └→ en2m_attribute_write() → 同上
 ```
 
-两条路最后都落到 `on_write()` 里的同一次 `drv_gpio_relay_set()`。
+两条路最后都落到 `on_write()` 里的同一次 `gpio_set_level()`。
 **这是故意的**：你只有一个地方碰硬件，所以不可能出现"本地按了但没上报"
 或者"上报了但继电器没动"。
 
@@ -99,24 +103,45 @@ mosquitto_pub -t espnow2mqtt/relay1/set -m '{"switch":"ON"}'
 按键走 `write` 而不是 `set`，就是为了复用那次硬件操作。
 细节见 [docs/callbacks.md](../../docs/callbacks.md)。
 
-### ISR 里为什么要 `en2m_schedule_from_isr`
+### 按键回调里为什么要 `en2m_schedule`
 
 ```c
-static void on_button(void *ctx)
+static void on_button(void *button_handle, void *usr_data)
 {
-    BaseType_t woken = pdFALSE;
-    en2m_schedule_from_isr(toggle, NULL, &woken);
-    if (woken) {
-        portYIELD_FROM_ISR();
-    }
+    en2m_schedule(toggle, NULL);
 }
 ```
 
-中断上下文里**不能**调 `en2m_attribute_write()`——它会取锁、可能发包。
-`en2m_schedule_from_isr` 只往队列里塞一个函数指针，
+`espressif/button` 不用 GPIO 中断，它**在一个 esp_timer 上轮询加消抖**
+（默认 5 ms 一次，连续两次同电平才算），所以这个回调跑在任务上下文里，
+不是 ISR —— 你想在这里直接调 `en2m_attribute_write()` 其实不会崩。
+
+但还是别这么干，原因是那个 esp_timer 是**全固件所有按键共用的一个**。
+在回调里取 en2m 的锁、等发包，会连带把同一块板上其它按键的消抖一起卡住。
+`en2m_schedule()` 只往队列里塞一个函数指针，立刻返回，
 `toggle()` 随后在 en2m 任务上运行，那里可以随便用整套 API。
 
-`woken` 那三行别省：不写就要等下一个 tick 才切任务，按键手感会差一截。
+**规矩很简单：按键回调里只做一件事，就是把活派出去。**
+
+（如果你换成自己写的 GPIO 中断，那就必须用 `en2m_schedule_from_isr()`，
+并且记得处理 `higher_prio_task_woken`。）
+
+### 按下到继电器动作有 ~180 ms 延迟
+
+这里注册的是 `BUTTON_SINGLE_CLICK`，而组件要等
+`short_press_time`（默认 180 ms）过去、确认没有第二击，才会发这个事件。
+所以按下去到继电器吸合大约有 180 ms 的延迟。
+
+嫌慢就改成在按下的瞬间就动：
+
+```c
+iot_button_register_cb(btn, BUTTON_PRESS_DOWN, NULL, on_button, NULL);
+```
+
+代价是以后没法再区分单击和双击了（按下就翻转，双击等于翻两次）。
+墙面开关用 `PRESS_DOWN` 手感更好，场景开关要手势就用
+`SINGLE_CLICK`。这一段的完整解释见
+[`scene_switch` 的手势时间参数](../scene_switch/README.md#手势时间参数)。
 
 ---
 
@@ -129,8 +154,8 @@ OnOff 属性默认 `persisted = true`，所以：
 3. `en2m_start()` 从 NVS 读回来，**调一次 `on_write()`**，继电器回到关的状态
 4. 第一条上报发出去的就是恢复后的真实状态
 
-你不用写任何恢复代码。这也是为什么 `drv_gpio_relay_init()` 必须放在
-`en2m_start()` **之前**——恢复的时候驱动得已经能用了。
+你不用写任何恢复代码。这也是为什么 `relay_init()` 必须放在
+`en2m_start()` **之前**——恢复的时候引脚得已经配好了。
 见 [docs/persistence.md](../../docs/persistence.md)。
 
 ---
@@ -139,7 +164,7 @@ OnOff 属性默认 `persisted = true`，所以：
 
 **要改的只有两处。**
 
-1. **换执行器** — 把 `on_write()` 里的 `drv_gpio_relay_set()` 换成你的操作
+1. **换执行器** — 把 `on_write()` 里的 `gpio_set_level()` 换成你的操作
    （SPI、I²C、PWM 随便）。**返回值要如实**：操作失败就返回错误码，
    组件会把这次写当作没发生，不提交也不上报。
 2. **换名字** — `cfg.mesh.name` 决定 MQTT slug 和 HA 里的实体 id，
@@ -164,7 +189,9 @@ en2m_endpoint_create_device(2, EN2M_DEVICE_TYPE_ON_OFF_PLUG);
 | 有 `parent=` 但 MQTT 上没东西 | 没开 `permit_join`，Bridge 日志里有 `drop uplink` |
 | HA 里点了没反应，串口也没日志 | `base_topic` 两边不一致 |
 | 一按键就重启 | 供电不够，继电器线圈拉垮了电源。见 [docs/wiring.md](../../docs/wiring.md#供电) |
-| 按一次跳两下 | 按键抖动。`drv_gpio_button_init` 的第三个参数是消抖毫秒数，默认 40，往上加 |
+| 按一次跳两下 | 消抖不够。`idf.py menuconfig` → `Component config` → `Button` 里把 `BUTTON_PERIOD_TIME_MS` 调大 |
+| 按下到吸合慢半拍 | 正常，`SINGLE_CLICK` 要等 180 ms。见上面那一节 |
+| 按键完全没反应 | 按键默认低电平有效（`BUTTON_ACTIVE_LEVEL 0`）。上拉到 VCC 的按键要改成 `1` |
 
 ---
 

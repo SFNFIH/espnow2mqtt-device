@@ -9,7 +9,7 @@
 | Cluster | OnOff (`0x0006`) + Electrical Power Measurement (`0x0B04`) |
 | 设备类型 | `EN2M_DEVICE_TYPE_SMART_PLUG` |
 | 回调 | `attribute_write` + `attribute_read` |
-| 驱动 | `drv_gpio_relay`、`drv_gpio_button` |
+| 外设组件 | [`espressif/button`](https://components.espressif.com/components/espressif/button) `^4.2.1` + 内置 `driver` 的 GPIO 输出 |
 | 上报周期 | 15 s（`report_interval_ms`） |
 | 默认名 / slug | `plug1` |
 | HA 实体 | `switch.plug1` + `sensor.plug1_power` + `sensor.plug1_energy` |
@@ -29,6 +29,10 @@
 `meter_sample()` 用 `esp_random()` 编了一个 20–60 W 的读数。
 换成 BL0937 / HLW8012 见下文。
 
+注册表里没有计量 IC 的组件，这是唯一一处示例里没有现成组件可用的外设——
+BL0937 / HLW8012 的接口就是一路脉冲，标定系数还得一块板一块板实测，
+没什么可复用的。
+
 > 插座是要接 220 V 的东西。强电部分请用成品模块，
 > 并且读一遍 [docs/wiring.md 的上电默认电平那一节](../../docs/wiring.md#上电默认电平)。
 
@@ -42,6 +46,9 @@ cd examples/smart_plug
 idf.py set-target esp32c3
 idf.py build flash monitor -p /dev/ttyACM0
 ```
+
+第一次 `build` 会联网把 `espressif/button` 下载到本工程的
+`managed_components/`。
 
 ---
 
@@ -94,6 +101,32 @@ static esp_err_t on_read(const en2m_attr_path_t *path, en2m_value_t *out, void *
 **`ESP_ERR_NOT_SUPPORTED` 不是错误。** 它告诉组件"这个属性我不管，
 你用数据模型里存的值"。OnOff 属性就是这么走的：它的真值在数据模型里，
 不需要回读 GPIO。
+
+### `meter_sample()` 为什么用一个静态变量记继电器状态
+
+```c
+static bool s_relay_on;      /* on_write 里更新 */
+
+static esp_err_t on_write(...)
+{
+    s_relay_on = value->v.b;
+    return gpio_set_level(PIN_RELAY, s_relay_on == RELAY_ACTIVE_HIGH);
+}
+```
+
+`meter_sample()` 要知道继电器开没开（关机时功率报 0）。
+看起来最直接的写法是在里面调
+`en2m_attribute_get(ENDPOINT, EN2M_CLUSTER_ON_OFF, ...)`，
+但**别这么写**：`meter_sample()` 是从 `on_read()` 里调的，
+而 `on_read()` 是组件在组帧过程中调的，那时候数据模型的锁**已经被持住了**。
+再去取一次是在自找麻烦。
+
+规矩是：**回调里不要反过来查数据模型。**
+你需要什么状态，就在写它的地方顺手留一份副本。
+一个 `bool` 而已，比一次加锁便宜得多，也比一个潜在的死锁便宜得多。
+
+（读 GPIO 本身是安全的，`gpio_get_level(PIN_RELAY)` 也能用。
+但输出引脚回读在有些配置下不一定反映驱动值，副本更可靠。）
 
 ---
 
@@ -154,7 +187,9 @@ NVS 的刷盘时机和擦写寿命见
 
 BL0937 / HLW8012 这类芯片把功率输出成**脉冲频率**，所以：
 
-1. 用 `gpio_install_isr_service` + 一个脉冲计数 ISR（ISR 里只 `count++`）
+1. 用 `gpio_install_isr_service` + 一个脉冲计数 ISR（ISR 里只 `count++`）。
+   这一路**不要**用 `espressif/button`：它是按 5 ms 轮询消抖的，
+   数不了几百赫兹的脉冲。按键组件适合"人按的开关"，不适合计数。
 2. `on_read()` 里把计数除以时间窗口，再乘芯片的标定系数
 
 ```c
@@ -183,7 +218,7 @@ I²C 的计量芯片（INA219、PZEM-004T）更简单，`on_read()` 里直接读
 | 现象 | 原因 |
 |---|---|
 | HA 里只有开关，没有两个 sensor | `caps` 里没有 `power`/`energy`。说明 `on_read()` 一直返回错误，看串口日志 |
-| `power` 一直是 0 | `drv_gpio_relay_get()` 读出来是关的。示例的 stub 在关机时故意报 0 |
+| `power` 一直是 0 | `s_relay_on` 是假的。示例的 stub 在关机时故意报 0 |
 | 能量曲线有尖刺 | 上报丢了一帧，`energy` 跳变。这是正常的，HA 的 `total_increasing` 会处理 |
 | 上报变慢或者收发卡顿 | `on_read()` 里做了阻塞 I/O，见上一节 |
 

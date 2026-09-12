@@ -244,13 +244,13 @@ PWM / GPIO 被设成正确的值。**第一份状态上报之前硬件就已经�
 ```c
 void app_main(void)
 {
-    ESP_ERROR_CHECK(drv_gpio_relay_init(PIN_RELAY, true));   /* ① 先建硬件 */
+    ESP_ERROR_CHECK(relay_init());                            /* ① 先建硬件 */
     en2m_endpoint_create_device(1, EN2M_DEVICE_TYPE_ON_OFF_PLUG);
     ESP_ERROR_CHECK(en2m_start(&cfg));                        /* ② 回放会调 write 回调 */
 }
 ```
 
-顺序反了的话，回放时驱动还没初始化，write 回调会失败
+顺序反了的话，回放时硬件还没初始化，write 回调会失败
 （然后属性也不会提交，等于恢复失败）。
 
 ### 恢复失败会怎样

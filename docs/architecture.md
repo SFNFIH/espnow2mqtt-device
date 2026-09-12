@@ -10,9 +10,9 @@
 ```
  ┌─ 本仓库 (espnow2mqtt-device) ────────────────┐
  │                                               │
- │   硬件 (DHT22 / 继电器 / PIR / 电机)          │
- │        ↕  GPIO / I2C / PWM                    │
- │   应用驱动 (drivers/, 完全在组件外)           │
+ │   硬件 (WS2812 / 继电器 / AHT20 / PIR / 电机) │
+ │        ↕  GPIO / I2C / RMT / PWM              │
+ │   外设驱动 (注册表组件, 完全在 en2m 之外)     │
  │        ↕  回调 / en2m_attribute_set           │
  │   en2m 交互层 (en2m_model + en2m_datamodel)   │
  │        ↕  en2m_pkt_t                          │

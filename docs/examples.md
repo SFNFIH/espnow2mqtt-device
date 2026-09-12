@@ -1,7 +1,10 @@
 # 示例逐个详解
 
 示例在仓库根目录 **`examples/`**，一个目录一个独立 ESP-IDF 工程。
-参考驱动在 **`drivers/`**，被多个示例共享。
+外设驱动一律来自 **[ESP 组件注册表](https://components.espressif.com)**，
+每个工程在自己的 `main/idf_component.yml` 里声明依赖，
+`idf.py build` 自动下载到该工程的 `managed_components/`。
+对应关系见 [examples/README.md 的外设组件表](../examples/README.md#外设组件)。
 
 > **这篇讲"为什么这么写"。** 想知道"怎么跑起来"——接线、烧写、
 > 在 HA 里出什么实体、怎么换成真硬件——看每个示例目录里自己的 README，
@@ -15,11 +18,11 @@
 
 | 示例 | Cluster | 回调组合 | 演示的核心 |
 |---|---|---|---|
-| [`relay_switch`](#relay_switch) | OnOff | `write` + `changed` | 远程和本地走同一条路径；ISR → `en2m_schedule_from_isr` |
+| [`relay_switch`](#relay_switch) | OnOff | `write` + `changed` | 远程和本地走同一条路径；按键回调 → `en2m_schedule` |
 | [`dimmable_light`](#dimmable_light) | OnOff + Level + ColorControl | `write` + `identify` | 一个回调按 `cluster_id` 分发多个 cluster |
 | [`smart_plug`](#smart_plug) | OnOff + ElectricalPower | `write` + `read` | 两种方向混用：执行器靠写，计量靠读 |
 | [`th_sensor`](#th_sensor) | Temperature + Humidity | 只有 `read` | 纯拉取型；采样周期用 `min_report_interval_ms` 保护 |
-| [`contact_sensor`](#contact_sensor) | BooleanState | `read`（兜底）+ ISR 推送 | 事件驱动 + 周期性自愈 |
+| [`contact_sensor`](#contact_sensor) | BooleanState | `read`（兜底）+ 边沿推送 | 事件驱动 + 周期性自愈 |
 | [`scene_switch`](#scene_switch) | Switch | 一个回调都没有 | 纯上行、无状态；`EN2M_REPORT_ON_CHANGE_ONLY` |
 | [`occupancy_sensor`](#occupancy_sensor) | Occupancy + Illuminance | `read` + `en2m_schedule` 推送 | 一个 endpoint 上推、拉两种传感器并存 |
 | [`fan_controller`](#fan_controller) | FanControl | 按 cluster 注册的 `write` | `en2m_cluster_set_write_cb` + 私有 `ctx` |
@@ -28,8 +31,9 @@
 | [`thermostat`](#thermostat) | Thermostat | `write` + `read` + `changed` | 三个回调配合跑设备端闭环 |
 | [`firmware/router`](#firmwarerouter) | 无 | 只有事件 | 纯传输层：`en2m_mesh_init` 不带数据模型 |
 
-**十一个示例都没有 `while (1)`**。只有 `scene_switch` 间接用到一个任务，
-而那个任务在驱动里（见 [§`scene_switch`](#scene_switch)），应用代码里没有。
+**十一个示例都没有 `while (1)`，也没有一个自己建的任务。**
+用到按键的四个示例间接借用了 `espressif/button` 的那个共享 esp_timer，
+但那是组件的事，应用代码里一行任务代码都没有。
 
 ## 怎么编译
 
@@ -45,29 +49,34 @@ idf.py -p /dev/ttyACM0 flash monitor
 `../../components`，不需要额外配置。`sdkconfig.defaults` 里已经设好目标芯片、
 4 MB flash、USB-Serial-JTAG 控制台和 `FREERTOS_HZ=1000`。
 
+**第一次 `build` 需要联网**：`idf_component.yml` 里声明的注册表组件会被下载到
+本工程的 `managed_components/`。那个目录是构建产物，不进版本库，
+删掉重新 build 就会再拉一次。锁定的版本记在 `dependencies.lock` 里。
+
 改信道等组件配置见 [kconfig.md](kconfig.md)。
 
 ---
 
 ## `relay_switch`
 
-**`examples/relay_switch`** — 最应该第一个读的示例。78 行，把这个库的核心思想全讲完了。
+**`examples/relay_switch`** — 最应该第一个读的示例。112 行，把这个库的核心思想全讲完了。
 
 硬件：`PIN_RELAY = GPIO5` 继电器，`PIN_BUTTON = GPIO9` 按键（板载 BOOT 键）。
-用 `drivers/drv_gpio_relay.c` 和 `drivers/drv_gpio_button.c`。
+继电器是一路 GPIO 输出（内置 `driver`），按键用
+[`espressif/button`](https://components.espressif.com/components/espressif/button)。
 
 ### 它演示的两条控制方向
 
 ```
 远程：HA → 协调器 → CMD 帧 → en2m 任务
-                               └→ on_write() → drv_gpio_relay_set()
+                               └→ on_write() → gpio_set_level()
                                                └→ 成功才提交 + 上报
 
-本地：按键 ISR → en2m_schedule_from_isr(toggle)
+本地：按键回调 → en2m_schedule(toggle)
                  └→ en2m 任务跑 toggle()
                      └→ en2m_attribute_get() 读当前值
                      └→ en2m_attribute_write(!current)
-                         └→ on_write() → drv_gpio_relay_set()
+                         └→ on_write() → gpio_set_level()
                                          └→ 成功才提交 + 上报
 ```
 
@@ -76,38 +85,59 @@ idf.py -p /dev/ttyACM0 flash monitor
 ```c
 static esp_err_t on_write(const en2m_attr_path_t *path, const en2m_value_t *value, void *ctx)
 {
-    if (path->cluster_id == EN2M_CLUSTER_ON_OFF) {
-        return drv_gpio_relay_set(value->v.b, ctx);
+    if (path->cluster_id != EN2M_CLUSTER_ON_OFF) {
+        return ESP_ERR_NOT_SUPPORTED;
     }
-    return ESP_ERR_NOT_SUPPORTED;
+    return gpio_set_level(PIN_RELAY, value->v.b == RELAY_ACTIVE_HIGH);
 }
 ```
 
-全固件只有这一处碰继电器。本地按键**没有**直接调 `drv_gpio_relay_set`，
+全固件只有这一处碰继电器。本地按键**没有**直接 `gpio_set_level`，
 而是走 `en2m_attribute_write`。好处：
 
 - 状态一定和组件里的一致，HA 里不会出现"开关显示关但灯亮着"
 - 按键触发的变化一定会上报，不用自己记得调上报函数
-- 继电器坏了（`drv_gpio_relay_set` 返回错误）时，本地和远程的失败行为一样：
+- 继电器坏了（`gpio_set_level` 返回错误）时，本地和远程的失败行为一样：
   不提交、不上报、HA 里状态弹回
 
-### ISR 的正确写法
+**为什么继电器不用注册表组件**：因为没有东西可抽象。
+一个引脚、一个电平，`gpio_set_level()` 就是完整的驱动。
+注册表里没有继电器组件不是遗漏。
+
+### 按键回调的正确写法
 
 ```c
-static void on_button(void *ctx)              /* 在中断上下文 */
+static void on_button(void *button_handle, void *usr_data)
 {
-    BaseType_t woken = pdFALSE;
-    en2m_schedule_from_isr(toggle, NULL, &woken);
-    if (woken) {
-        portYIELD_FROM_ISR();
-    }
+    en2m_schedule(toggle, NULL);
 }
 ```
 
-ISR 里**不能**调 `en2m_attribute_get` / `en2m_attribute_write`（都要拿互斥锁）。
-`en2m_schedule_from_isr` 把 `toggle` 挪到 `en2m` 任务，那里可以随便用 API。
-`woken` / `portYIELD_FROM_ISR` 这一对是 FreeRTOS 的标准写法，不写也能工作，
-写了响应更快。
+注意这里是 `en2m_schedule` 而**不是** `en2m_schedule_from_isr`：
+`espressif/button` 不挂 GPIO 中断，它在一个 esp_timer 上按
+`CONFIG_BUTTON_PERIOD_TIME_MS`（默认 5 ms）轮询，
+连续 `CONFIG_BUTTON_DEBOUNCE_TICKS`（默认 2）次读到同一电平才认。
+所以回调跑在**任务上下文**，取锁、发包在技术上都是合法的。
+
+**但还是要 `en2m_schedule`**，理由是那个 esp_timer 是
+**全固件所有按键实例共用的一个**（`iot_button.c` 里的 `g_head_handle` 链表
+被同一个定时器回调遍历）。在里面等锁、等射频发送，
+会连带把同一块板上其它按键的消抖一起卡住。
+
+**规矩：按键回调里只派活，不干活。**
+
+（如果你换成自己写的 GPIO 中断，那就必须用 `en2m_schedule_from_isr()`
+并处理 `higher_prio_task_woken`。真 ISR 里**不能**调
+`en2m_attribute_get` / `en2m_attribute_write`，两个都要拿互斥锁。）
+
+### `SINGLE_CLICK` 有 ~180 ms 延迟
+
+示例注册的是 `BUTTON_SINGLE_CLICK`，组件要等 `short_press_time`
+（默认 180 ms）过去、确认没有第二击才发这个事件。
+墙面开关嫌慢的话改注册 `BUTTON_PRESS_DOWN`，按下瞬间就动，
+代价是从此无法区分单击和双击。
+状态机的完整解释见
+[`scene_switch` 的手势时间参数](../examples/scene_switch/README.md#手势时间参数)。
 
 ### 持久化是白拿的
 
@@ -116,15 +146,19 @@ ISR 里**不能**调 `en2m_attribute_get` / `en2m_attribute_write`（都要拿�
 - 每次继电器状态变化，5 秒内会批量写进 NVS
 - 重启后 `en2m_start` 会把上次的值**通过 `on_write`** 写回继电器
 
-正因为回放走 `on_write`，`drv_gpio_relay_init` 必须在 `en2m_start`
+正因为回放走 `on_write`，`relay_init()` 必须在 `en2m_start`
 **之前**调用。示例里就是这个顺序。详见 [persistence.md](persistence.md)。
+
+**继电器状态只有组件这一份持久化。** 应用侧不要再自己往 NVS 写一遍——
+理由见[§外设组件](#外设组件)。
 
 ### 要改成你自己的设备
 
 | 改什么 | 怎么改 |
 |---|---|
 | 引脚 | `PIN_RELAY` / `PIN_BUTTON` |
-| 继电器是低电平有效 | `drv_gpio_relay_init(PIN_RELAY, false)` |
+| 继电器是低电平有效 | `#define RELAY_ACTIVE_HIGH false` |
+| 按键是高电平有效 | `#define BUTTON_ACTIVE_LEVEL 1` |
 | 不是继电器而是 MOSFET/SSR | `on_write` 里换成你的输出函数就行 |
 | 多路继电器 | 见 [usage.md 配方 E](usage.md#配方-e--一个固件驱动多个互不相关的外设)，用多 cluster |
 | HA 里显示成灯而不是插座 | `EN2M_DEVICE_TYPE_ON_OFF_LIGHT` |
@@ -133,7 +167,11 @@ ISR 里**不能**调 `en2m_attribute_get` / `en2m_attribute_write`（都要拿�
 
 ## `dimmable_light`
 
-**`examples/dimmable_light`** — 一个回调覆盖三个 cluster。
+**`examples/dimmable_light`** — 一个回调覆盖三个 cluster，
+输出是一条真的 WS2812 灯带
+（[`espressif/led_strip`](https://components.espressif.com/components/espressif/led_strip)，
+RMT 后端）。默认引脚 `GPIO8` 是 C3 DevKit 上板载的那颗灯珠，
+所以不接线也能看到效果。
 
 ```c
 switch (path->cluster_id) {
@@ -167,20 +205,58 @@ en2m_cluster_create(ep, EN2M_CLUSTER_IDENTIFY);      /* 配方里不含 Identify
 必须自己 `en2m_cluster_create`。加了之后组件会每秒把 `IDENTIFY_TIME` 自减并回调
 你的 `identify`，你只管闪灯。详见 [state-flow.md](state-flow.md#9-identify-倒计时)。
 
-### 换成真硬件
+### mired → RGB：数据模型和硬件说的不是同一种语言
 
-示例里的 `light_apply()` 只打日志。换 LEDC：
+WS2812 的灯珠吃 RGB，Matter 的 Color Control 说的是**迈尔德**。
+中间那一步是这个示例唯一有实质内容的代码：一张 10 点的黑体辐射表
+（2000 K–6500 K，正好覆盖 HA 色温滑块的 154–500 迈尔德），线性插值。
+
+红色分量全程 255，只有绿蓝在动——这不是表做得糙，
+真实黑体在这个区间里就是这样："暖"就是压绿蓝，"冷"就是补回来。
+
+### gamma 加在亮度上，不是加在通道上
+
+```c
+gamma_level = (uint32_t)s_light.level * s_light.level / 254u;
+r = (uint8_t)((uint32_t)r * gamma_level / 254u);
+g = (uint8_t)((uint32_t)g * gamma_level / 254u);
+b = (uint8_t)((uint32_t)b * gamma_level / 254u);
+```
+
+WS2812 的占空比是线性的，人眼不是，所以亮度必须做 gamma
+（这里用 γ≈2.0，一次乘法搞定，不用查表也不用浮点）。
+
+**关键是先算 gamma、再整体缩放三个通道。**
+如果反过来对 R/G/B 各自平方，通道之间的**比例**就变了
+（255² : 141² ≠ 255 : 141），色温会跟着亮度飘：调暗一点颜色就偏冷。
+先定比例再定总量，色温才稳。
+
+这个坑不止 WS2812 有——任何 RGB 输出（RGB LEDC、LED 驱动 IC）都一样。
+
+### 换成 LEDC 单色 / 双色温
+
+把 `idf_component.yml` 里的 `espressif/led_strip` 删掉，改用内置 LEDC：
 
 ```c
 static void light_apply(void)
 {
-    uint32_t duty = s_light.on ? (s_light.level * 8191 / 254) : 0;   /* 13 bit */
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    /* gamma 照样要做 */
+    uint32_t total = s_light.on ? (uint32_t)s_light.level * s_light.level * 8191
+                                      / (254 * 254)
+                                : 0;
+    uint32_t warm_pct = (s_light.mireds - 154) * 100 / (500 - 154);
+
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, CH_WARM, total * warm_pct / 100);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, CH_COLD, total * (100 - warm_pct) / 100);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, CH_WARM);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, CH_COLD);
 }
 ```
 
-双色温灯要按 mired 在暖白/冷白两路之间分配占空比，`on_write` 一行都不用改。
+`on_write` 一行都不用改——这就是把硬件关在一个函数里的好处。
+
+**`light_apply()` 跑在 en2m 任务上**，所以别在里面做渐变循环。
+要渐变就起一个 `esp_timer`，在定时器回调里推进一帧。
 
 ---
 
@@ -192,6 +268,11 @@ static void light_apply(void)
 cfg.attribute_write = on_write;   /* OnOff        → 继电器 */
 cfg.attribute_read  = on_read;    /* 功率 / 电量  → 计量芯片 */
 ```
+
+硬件和 `relay_switch` 相同（GPIO 继电器 + `espressif/button`）。
+计量是唯一一处没有注册表组件可用的外设：
+BL0937 / HLW8012 的接口就是一路脉冲，标定系数还得一块板一块板实测，
+没什么可复用的，所以示例里是 `esp_random()` 的 stub。
 
 这是最典型的"混合设备"结构。判断依据就是
 [usage.md 第 3 步](usage.md#第-3-步给每个属性决定走哪条路)那张表：
@@ -229,6 +310,12 @@ static int32_t meter_sample(void)
   建的顺序（`ACTIVE_POWER_MW` 先，`ENERGY_MWH` 后），所以是对的。
 - 换真芯片（BL0937 / HLW8012 / CSE7766）时只改 `meter_sample()`。BL0937 是脉冲
   输出，要用 PCNT 或者 GPIO 中断计数——计数放中断，换算放读回调。
+  **这一路不要用 `espressif/button`**：它按 5 ms 轮询消抖，数不了几百赫兹的脉冲。
+  按键组件是给"人按的开关"用的，不是计数器。
+- `meter_sample()` 靠一个 `static bool s_relay_on` 知道继电器开没开，
+  那份副本在 `on_write` 里更新。**不要在 `on_read` 里回头调
+  `en2m_attribute_get`**：`on_read` 是组件在组帧过程中调的，
+  数据模型的锁已经被持住了。需要什么状态就在写它的地方留一份副本。
 
 ---
 
@@ -236,10 +323,15 @@ static int32_t meter_sample(void)
 
 **`examples/th_sensor`** — 最纯粹的拉取型传感器，只有一个读回调。
 
+传感器是 [`espressif/aht20`](https://components.espressif.com/components/espressif/aht20)
+（I²C，SDA=GPIO4 / SCL=GPIO5）。
+注册表里**没有 DHT 组件**，而 AHT20 正是 DHT22 的现代替代品：
+同量程、更高精度、标准 I²C、不需要外挂上拉电阻。
+
 ```c
 cfg.attribute_read = on_read;
 cfg.report_interval_ms     = 60000;   /* 一分钟上报一次 */
-cfg.min_report_interval_ms = 5000;    /* DHT22 最快 2 秒，留足余量 */
+cfg.min_report_interval_ms = 5000;    /* 顺手压住自热 */
 ```
 
 ### 为什么这么写就够了
@@ -247,11 +339,44 @@ cfg.min_report_interval_ms = 5000;    /* DHT22 最快 2 秒，留足余量 */
 组件在**每次组报文之前**遍历所有带读回调的属性，调一次回调拿新值。所以：
 
 - 采样频率 = 上报频率，一次都不浪费
-- 应用里没有定时器、没有任务、没有缓存
-- DHT22 有 2 秒最小采样间隔这个硬约束，直接靠 `min_report_interval_ms = 5000`
-  兜住，不需要在驱动里再加节流
+- 应用里没有定时器、没有任务
+- AHT20 读得太勤会自热（芯片温度高于环境零点几度），
+  靠 `min_report_interval_ms = 5000` 顺手兜住
 
 这是"组件持有时序"最直白的体现。想改采样频率，改 `report_interval_ms`，别的都不用动。
+
+### 一次测量供两个属性用
+
+组件是**每个属性调一次**读回调，而 AHT20 一次转换同时给出温度和湿度。
+两次各测一遍的话，一轮上报要等 160 ms，而且两个数还来自不同时刻。
+
+所以 `sample()` 带一个 2 秒的时间戳缓存：
+
+```c
+static esp_err_t sample(void)
+{
+    int64_t now = esp_timer_get_time();
+
+    if (s_sample.taken_us != 0 && now - s_sample.taken_us < SAMPLE_CACHE_MS * 1000LL) {
+        return ESP_OK;                  /* 上一次的还新鲜 */
+    }
+    ESP_RETURN_ON_ERROR(aht20_read_temperature_humidity(...), TAG, "aht20 read failed");
+    /* …存值和时间戳… */
+}
+```
+
+同一轮里的第二次调用落在窗口内，直接吃缓存。两个好处：
+
+1. 同一条上报里的温度和湿度来自**同一次**测量，时间上一致
+2. **不依赖属性被遍历的顺序**——谁先被问到谁去测，另一个复用，
+   两种顺序结果都一样
+
+注意这一点和 `smart_plug` 的积分正好相反：那里**依赖**了
+`ACTIVE_POWER_MW` 先于 `ENERGY_MWH`（按建的顺序），
+这里则刻意做成顺序无关。能做到顺序无关就该做到。
+
+窗口设 2 秒是因为上报最快 5 秒一次，所以缓存**绝不会跨轮复用**。
+改 `min_report_interval_ms` 到 2 秒以下的话，要把这个窗口一起调小。
 
 ### 两个设备类型叠在一个 endpoint 上
 
@@ -268,10 +393,10 @@ HA 那边会看到**两个** sensor 实体（温度、湿度），因为 HA 的�
 ### `ESP_RETURN_ON_ERROR` 的用法
 
 ```c
-ESP_RETURN_ON_ERROR(drv_dht_get_temperature(&centi_celsius, ctx), TAG, "temperature read failed");
+ESP_RETURN_ON_ERROR(sample(), TAG, "temperature read failed");
 ```
 
-DHT 偶尔会校验失败。这里返回错误（不是 `ESP_ERR_NOT_SUPPORTED`）的效果是
+I²C 偶尔会失败（线长、干扰）。这里返回错误（不是 `ESP_ERR_NOT_SUPPORTED`）的效果是
 **保留上一次的缓存值继续上报**，HA 里不会出现空洞。如果返回
 `ESP_ERR_NOT_SUPPORTED`，效果一样（保留缓存），区别只在语义：
 `NOT_SUPPORTED` 说"这个属性不是我管的"，错误说"是我管的但这次没读到"。
@@ -285,57 +410,81 @@ DHT 偶尔会校验失败。这里返回错误（不是 `ESP_ERR_NOT_SUPPORTED`�
 
 **`examples/contact_sensor`** — 推送为主 + 拉取兜底，这个组合值得抄。
 
+干簧管在电路上就是一个按键：一根线、两个电平、会抖。
+所以这里直接用
+[`espressif/button`](https://components.espressif.com/components/espressif/button)，
+把两个边沿都注册上：
+
 ```c
-drv_gpio_contact_init(PIN_CONTACT, CONTACT_ACTIVE_LOW);
+iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, &s_contact);
+iot_button_register_cb(s_contact, BUTTON_PRESS_DOWN, NULL, on_contact_edge, NULL);
+iot_button_register_cb(s_contact, BUTTON_PRESS_UP,   NULL, on_contact_edge, NULL);
 /* …建 endpoint… */
-drv_gpio_contact_watch(on_contact_edge, NULL);     /* 双边沿中断 */
 en2m_start(&cfg);                                  /* cfg.attribute_read = on_read */
 ```
+
+消抖是白拿的（组件 5 ms 轮询、连续两次同电平才认，约 10 ms 窗口），
+内部上拉也由 `active_level = 0` 自动打开。
 
 ### 为什么要两条路
 
 | 路径 | 作用 | 延迟 |
 |---|---|---|
-| GPIO 中断 → `en2m_schedule_from_isr` → `en2m_report_boolean_state` | 门一开一关立刻上报 | 毫秒级 |
+| 边沿回调 → `en2m_schedule` → `en2m_report_boolean_state` | 门一开一关立刻上报 | 几十毫秒 |
 | `attribute_read` | 每次周期上报前重读真实电平 | 最多一个上报周期 |
 
-只有中断路径的话，**丢一次中断就会永久卡住**——门开着但 HA 显示关着，直到下一次
-开关。读回调是一个几乎免费的自愈机制：下一次周期上报会把真实电平重新同步回去。
+只有事件路径的话，**丢一帧就会永久卡住**——门开着但 HA 显示关着，直到下一次
+开关。ESP-NOW 是无确认传输，丢包不是假设而是必然。
+读回调是一个几乎免费的自愈机制：下一次周期上报会把真实电平重新同步回去。
 
 这个模式适合所有"状态型"的数字传感器：门磁、水浸、按钮锁定、雨感。
 
-### 中断里回读硬件
+### 回调里回读硬件
 
 ```c
-static void publish_contact(void *arg)      /* 在 en2m 任务上 */
+static bool contact_is_open(void)
 {
-    bool open = false;
-    if (drv_gpio_contact_get(&open, NULL) == ESP_OK) {
-        en2m_report_boolean_state(ENDPOINT, open);
-    }
+    return (iot_button_get_key_level(s_contact) == BUTTON_ACTIVE) == CONTACT_OPEN_WHEN_ACTIVE;
 }
 
-static void on_contact_edge(void *arg)      /* 在 ISR 上 */
+static void publish_contact(void *arg)      /* 在 en2m 任务上 */
 {
-    BaseType_t woken = pdFALSE;
-    en2m_schedule_from_isr(publish_contact, NULL, &woken);
-    if (woken) { portYIELD_FROM_ISR(); }
+    en2m_report_boolean_state(ENDPOINT, contact_is_open());
+}
+
+static void on_contact_edge(void *button_handle, void *usr_data)
+{
+    en2m_schedule(publish_contact, NULL);
 }
 ```
 
-在**任务里**回读电平而不是在 ISR 里，顺手把抖动吃掉了：一次机械抖动可能触发
-三四次中断，但等任务跑起来时电平已经稳定，三四次都读到同一个值，而组件的
-属性去重会让它只上报一次。
+两个细节：
 
-如果你的事件源本身就带着值（不需要回读），可以更短：
-用 `en2m_attribute_set_from_isr` 直接把值交给组件，连 `en2m_schedule` 都省掉。
+**同一个回调挂两个事件。** 回调根本不看触发它的是 `PRESS_DOWN` 还是
+`PRESS_UP`，它去回读电平。所以不需要两个函数，也不需要 `switch`。
+
+**回读而不是取反。** "上次是 ON 那这次就是 OFF"的写法一旦错过一个边沿
+就永久反相；回读则自动纠正。在**任务里**回读还顺手把抖动吃掉了：
+一次机械抖动可能触发三四次回调，但等任务跑起来时电平已经稳定，
+三四次都读到同一个值，而组件的属性去重会让它只上报一次。
+
+`iot_button_get_key_level()` 就是一次 `gpio_get_level()`（见
+`button_gpio.c` 的 `button_gpio_get_key_level`），不经过消抖状态机，
+任何任务都能调，也没有延迟。
 
 ### 极性
 
 `EN2M_CLUSTER_BOOLEAN_STATE` 的 `STATE_VALUE` 在 HA 里映射成 `contact` 键。
-示例上报的是 `open`（`drv_gpio_contact_get` 的语义），`CONTACT_ACTIVE_LOW = true`
-表示磁铁靠近时引脚拉低。接反了就把 `CONTACT_ACTIVE_LOW` 改掉，别在回调里取反——
-改配置比改逻辑好维护。
+示例上报的是 `open`。极性拆成了**两个互相独立**的宏：
+
+```c
+#define CONTACT_ACTIVE_LEVEL 0        /* 电气极性：吸合时引脚是低还是高 */
+#define CONTACT_OPEN_WHEN_ACTIVE true /* 语义极性：吸合算"门开"还是"门关" */
+```
+
+第一个取决于你接上拉还是下拉，第二个取决于你把磁铁装在哪。
+这两件事没有关系，所以不该塞进一个开关。
+接反了改宏，别在回调里取反——改配置比改逻辑好维护。
 
 ---
 
@@ -351,27 +500,86 @@ en2m_device_config_t cfg = {
 };
 
 en2m_endpoint_create_device(ENDPOINT, EN2M_DEVICE_TYPE_GENERIC_SWITCH);
-drv_gpio_button_gesture_init(PIN_BUTTON, BUTTON_ACTIVE_LOW, DEBOUNCE_MS,
-                             LONG_PRESS_MS, DOUBLE_GAP_MS, on_gesture, NULL);
 en2m_start(&cfg);
+button_init();                      /* ← 事件源在 en2m_start 之后 */
 ```
 
-`on_gesture` 只做一次枚举翻译：
+### 四种手势全部来自组件
+
+短按 / 双击 / 长按 / 释放**不是手写的状态机**，是
+[`espressif/button`](https://components.espressif.com/components/espressif/button)
+的原生事件。应用侧只有一张映射表：
 
 ```c
-static void on_gesture(drv_gpio_button_gesture_t gesture, void *ctx)
-{
+static const struct {
+    button_event_t event;
     en2m_press_action_t action;
+} map[] = {
+    {BUTTON_SINGLE_CLICK,     EN2M_PRESS_SHORT},
+    {BUTTON_DOUBLE_CLICK,     EN2M_PRESS_DOUBLE},
+    {BUTTON_LONG_PRESS_START, EN2M_PRESS_LONG},
+    {BUTTON_LONG_PRESS_UP,    EN2M_PRESS_RELEASE},
+};
 
-    switch (gesture) {
-    case DRV_BUTTON_DOUBLE_PRESS: action = EN2M_PRESS_DOUBLE;  break;
-    case DRV_BUTTON_LONG_PRESS:   action = EN2M_PRESS_LONG;    break;
-    case DRV_BUTTON_RELEASE:      action = EN2M_PRESS_RELEASE; break;
-    default:                      action = EN2M_PRESS_SHORT;   break;
-    }
-    en2m_report_button(ENDPOINT, action);
+for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+    iot_button_register_cb(btn, map[i].event, NULL, on_press,
+                           (void *)(uintptr_t)map[i].action);
 }
 ```
+
+**一个回调服务四个事件，而且回调里没有分支**——
+要发哪个 action 是通过 `usr_data` 带进来的，原封不动传给
+`en2m_schedule()` 的 `arg`：
+
+```c
+static void report_press(void *arg)         /* 在 en2m 任务上 */
+{
+    en2m_report_button(ENDPOINT, (en2m_press_action_t)(uintptr_t)arg);
+}
+
+static void on_press(void *button_handle, void *usr_data)
+{
+    en2m_schedule(report_press, usr_data);
+}
+```
+
+为什么一定要经过 `en2m_schedule`：`en2m_report_button()` 内部是
+"读计数 → 写 action → 写计数 +1"，**三步不是原子的**。
+全部收拢到 en2m 任务上，计数就不可能被两次按键撕裂。
+（这也正是 `en2m_report_button_from_isr` 的做法——它就是把参数打包
+`en2m_schedule_from_isr` 出去。）
+
+### `short_press_time` 不是"多短算短按"
+
+```c
+const button_config_t btn_cfg = {
+    .long_press_time = LONG_PRESS_MS,  /* 800 ms */
+    .short_press_time = CLICK_GAP_MS,  /* 300 ms */
+};
+```
+
+这个字段的名字有误导性。看 `iot_button.c` 的状态机就清楚了：
+`short_press_ticks` 用在 `PRESS_REPEAT_DOWN_CHECK` 状态，
+也就是**松手之后等待下一击的窗口**。
+
+```
+按下 ──> PRESS_DOWN
+松开 ──> PRESS_UP，开始计时
+          ├─ 窗口内又按下  ──> repeat++，继续等
+          └─ 窗口内没动作  ──> 按 repeat 发 SINGLE_CLICK / DOUBLE_CLICK
+```
+
+所以它同时决定两件事：**双击能有多慢**（超过窗口就变两次单击），
+以及**单击有多慢**（必须等满窗口才能确定没有第二下）。
+默认 180 ms 对不少人偏紧，示例放宽到 300 ms，代价是单击延迟 300 ms。
+
+两个容易踩的地方：
+
+- **不注册 `BUTTON_DOUBLE_CLICK` 也一样要等**，状态机是同一套。
+  真要即时响应只能改用 `BUTTON_PRESS_DOWN`。
+- **双击的第二下如果按住超过这个窗口**，状态机走到 `PRESS_END`
+  而不发 `DOUBLE_CLICK`。"快按一下、再按住"什么都不会发。
+  长按要单独用 `BUTTON_LONG_PRESS_START`，别指望它和连击混用。
 
 HA 里会出现一个 `event.switch1_button` 实体，
 四种事件类型：`press` / `double_press` / `long_press` / `release`。
@@ -398,89 +606,169 @@ HA 里会出现一个 `event.switch1_button` 实体，
 计数器是唯一的区分手段。详见
 [reporting.md](reporting.md#按键报的是计数器不是按了)。
 
-### 手势识别在驱动里，不在应用里
-
-`drv_gpio_button`（另一个按键驱动）只回答"按了吗"，够用于
-`relay_switch` 那种"按一下切换继电器"的场景。
-场景开关需要知道"怎么按的"，所以用的是
-`drv_gpio_button_gesture`：它监听**双边沿**，
-把判定放在一个小任务里用队列超时当时钟。
-
-| | `drv_gpio_button` | `drv_gpio_button_gesture` |
-|---|---|---|
-| 回调上下文 | **ISR** | **任务** |
-| 监听边沿 | 单边（按下） | 双边 |
-| 能区分 | 只有"按了" | 短按 / 双击 / 长按 / 长按松开 |
-| 额外开销 | 无 | 一个队列 + 一个 2.5 KB 栈的任务 |
-
-**短按有固有延迟**：第一次按下松开之后，必须等
-`DOUBLE_GAP_MS`（示例里 300 ms）确认没有第二次按，才能确定是短按。
-这个延迟没法消除——在间隔到期之前，一次按和双击的前半段是同一回事。
-调小会让双击难按中，调大会让单击变迟钝。
-
 ### 换成真硬件
 
-改 `PIN_BUTTON` 和 `BUTTON_ACTIVE_LOW` 就行。
-三个时间参数的手感建议：
+改 `PIN_BUTTON` 和 `BUTTON_ACTIVE_LEVEL` 就行。两个时间参数的手感建议：
 
 | 参数 | 示例值 | 合理范围 |
 |---|---|---|
-| `DEBOUNCE_MS` | 30 | 20–50，机械按键的抖动通常 < 20 ms |
-| `LONG_PRESS_MS` | 800 | 600–1000，低于 500 容易和短按混 |
-| `DOUBLE_GAP_MS` | 300 | 250–400 |
+| `LONG_PRESS_MS` | 800 | 600–1000，低于 500 容易和连击混 |
+| `CLICK_GAP_MS` | 300 | 250–400 |
 
----
+消抖不在应用里配，它是组件的全局 Kconfig
+（`BUTTON_PERIOD_TIME_MS` 默认 5 ms × `BUTTON_DEBOUNCE_TICKS` 默认 2，
+约 10 ms 窗口）。机械按键抖动通常 < 20 ms，默认够用；
+SW-520D 这类振动开关能抖到 50 ms，要往上调。
 
-## `occupancy_sensor`
+### 做成多按键：开销几乎为零
 
-**`examples/occupancy_sensor`** — 一个 endpoint 上推、拉并存，而且演示了
-用 `esp_timer` 当事件源。
-
-```c
-cfg.attribute_read = on_read;                 /* 光照：拉 */
-/* 人体：推，由 esp_timer 模拟 PIR 中断 */
-```
-
-### `esp_timer` + `en2m_schedule` 的组合
+四键场景开关的正确做法是一个按键一个 endpoint，
+`usr_data` 里同时打包 endpoint 和 action：
 
 ```c
-static void simulate_motion(void *arg)        /* esp_timer 任务上下文 */
+#define PACK(ep, action) ((void *)(uintptr_t)(((ep) << 8) | (action)))
+
+static void report_press(void *arg)
 {
-    s_occupied = !s_occupied;
-    en2m_schedule(publish_motion, NULL);      /* 挪到 en2m 任务 */
+    uintptr_t packed = (uintptr_t)arg;
+    en2m_report_button((uint8_t)(packed >> 8), (en2m_press_action_t)(packed & 0xFF));
 }
 ```
 
-严格说，`esp_timer` 回调**不在** ISR 里（默认跑在 `esp_timer` 任务上），所以直接
-调 `en2m_report_occupancy` 也能工作。示例故意多绕一层 `en2m_schedule`，是为了
-演示"把工作统一收拢到 `en2m` 任务"的写法——换成真 PIR 的 GPIO 中断时，
-只要把 `en2m_schedule` 换成 `en2m_schedule_from_isr`，其余一行不改。
+**`espressif/button` 的所有实例共用同一个 esp_timer**
+（`iot_button.c` 里所有按键挂在 `g_head_handle` 链表上，
+被同一个定时器回调遍历）。四个按键不是四个任务四个定时器，
+就是同一个 5 ms 回调里多扫三个引脚。实例数量没有上限，只受内存限制。
 
-> 这里有个容易忽略的细节：`esp_timer` 回调默认跑在专用任务上，但如果你创建 timer
-> 时用了 `.dispatch_method = ESP_TIMER_ISR`，它就真的在中断里了，那时必须用
-> `_from_isr` 版本。见 [concurrency.md](concurrency.md#4-每个回调跑在哪个上下文)。
+这也正是为什么按键回调里绝对不能阻塞：**卡住一个就卡住全部**。
 
-### 顺序：`en2m_start` 之后才启动事件源
+老版本这里是每个按键一个 2.5 KB 栈的任务，四个按键 10 KB。
+换成组件之后这笔开销没有了，而且
+**`scene_switch` 从"唯一用到任务的示例"变成了和其它示例一样干净**。
+
+## `occupancy_sensor`
+
+**`examples/occupancy_sensor`** — 一个 endpoint 上推、拉并存，
+而且两路传感器各自演示了一个不同的"别阻塞 en2m 任务"的办法。
 
 ```c
-ESP_ERROR_CHECK(en2m_start(&cfg));
-ESP_ERROR_CHECK(start_motion_simulation());   /* ← 在 start 之后 */
+cfg.attribute_read = on_read;    /* 光照：拉；人在：也走 read 兜底 */
+/* 人在：推，PIR 的边沿回调 */
 ```
 
-`en2m_schedule` 在组件启动前会失败（队列还不存在）。所以事件源要么在
-`en2m_start` 之后启动（这个示例），要么容忍启动前的几次失败
-（`contact_sensor` 把 `watch` 放在 `start` 前面，那几毫秒里的中断会被丢掉，
-但反正开机时门的状态会被第一次周期上报兜住）。
+硬件：PIR 接 GPIO6（用
+[`espressif/button`](https://components.espressif.com/components/espressif/button)），
+BH1750 接 I²C（SDA=GPIO4 / SCL=GPIO5，
+[`espressif/bh1750`](https://components.espressif.com/components/espressif/bh1750)）。
 
-### 换真硬件
+### PIR 为什么也是"按键"
+
+一个 PIR 模块的输出就是一根会变电平的线：有人时拉高，保持时间到了拉低。
+和干簧管、和墙面按键在电气上没有任何区别，所以用同一个组件，
+和 `contact_sensor` 一样把两个边沿都注册上：
+
+```c
+iot_button_register_cb(s_pir, BUTTON_PRESS_DOWN, NULL, on_pir_edge, NULL);
+iot_button_register_cb(s_pir, BUTTON_PRESS_UP,   NULL, on_pir_edge, NULL);
+```
+
+`PRESS_DOWN` = 有人了，`PRESS_UP` = 保持时间过了。
+**两个都要注册**——只挂一个的话永远报不出另一边。
+这正是自己写 GPIO 中断时最常犯的错（只配 `GPIO_INTR_POSEDGE`，
+于是只报 `ON` 不报 `OFF`）；用组件的话两行摆在一起，很难写漏。
+
+PIR 的输出级是推挽的，所以 `button_gpio_config_t` 里要
+`.disable_pull = true`，否则内部上拉会和模块对抗。
+
+### `en2m_schedule` 而不是 `_from_isr`
+
+```c
+static void on_pir_edge(void *button_handle, void *usr_data)
+{
+    en2m_schedule(publish_motion, NULL);
+}
+```
+
+`espressif/button` 不挂 GPIO 中断，它在一个 esp_timer 上轮询，
+回调跑在任务上下文，所以是不带 `_from_isr` 的那个。
+
+技术上这里直接调 `en2m_report_occupancy()` 也能跑。绕一层
+`en2m_schedule` 有两个理由：那个 esp_timer 是全固件按键共用的一个，
+不能在里面等锁等发包；以及把所有数据模型操作收拢到一个任务上，
+省掉一整类竞态。见 [concurrency.md](concurrency.md#4-每个回调跑在哪个上下文)。
+
+### BH1750 跑连续模式，读回调才不会阻塞
+
+```c
+bh1750_power_on(s_bh1750);
+bh1750_set_measure_mode(s_bh1750, BH1750_CONTINUE_1LX_RES);
+```
+
+BH1750 的**单次**高分辨率测量要 120 ms。
+如果在 `on_read()` 里"触发测量 + 等结果"，就会把 en2m 任务卡住 120 ms，
+那段时间收不了包——这正是 [concurrency.md](concurrency.md) 反复强调的事。
+
+**连续模式**让器件自己一直测、结果常驻寄存器，
+`on_read()` 里的 `bh1750_get_data()` 只是一次几毫秒的 I²C 读。
+代价是静态电流从几 µA 涨到 120 µA，对常电设备完全无所谓。
+
+这是和 `th_sensor` 不同的第二种解法。两种都值得记住：
+
+| 办法 | 用在哪 | 适合 |
+|---|---|---|
+| 让器件连续测，读回调只取寄存器 | `occupancy_sensor` 的 BH1750 | 器件支持连续模式，且不在乎静态功耗 |
+| 时间戳缓存，第一次调用去测 | `th_sensor` 的 AHT20 | 一次转换出多个值，或者器件只有单次模式 |
+| `esp_timer` 周期采样，读回调只取缓存 | 采样 > ~100 ms 时 | DS18B20、要加热的气体传感器 |
+
+电池设备要用 `BH1750_ONETIME_1LX_RES`，
+那 120 ms 就必须挪出 `on_read()`，走上表第三行。
+
+### 顺序：硬件在前，事件源在后
+
+```c
+ESP_ERROR_CHECK(light_sensor_init());   /* I²C 在 en2m_start 之前 */
+/* …建 endpoint… */
+ESP_ERROR_CHECK(en2m_start(&cfg));
+ESP_ERROR_CHECK(pir_init());            /* 事件源在 en2m_start 之后 */
+```
+
+**通用规则：硬件初始化在 `en2m_start` 之前，事件源在之后。**
+
+前半句是因为持久化状态的回放会在 `en2m_start` 里调你的写回调
+（见 [`relay_switch`](#relay_switch)）；
+后半句是因为 `en2m_schedule` 在队列建好之前会返回
+`ESP_ERR_INVALID_STATE`，那次事件就丢了。
+
+这个示例两边都有，是这条规则最完整的演示。
+（`contact_sensor` 把按键初始化放在 `start` 前面，
+那几毫秒里的边沿会被丢掉，但反正开机时门的状态会被第一次周期上报兜住。）
+
+### 人在状态的自愈路径
+
+`on_read` 里除了照度还处理了 `EN2M_CLUSTER_OCCUPANCY`：
+
+```c
+case EN2M_CLUSTER_OCCUPANCY:
+    *out_value = en2m_bool(pir_is_active());
+    return ESP_OK;
+```
+
+作用和 `contact_sensor` 的读回调完全一样：ESP-NOW 丢一帧，
+HA 里的状态就会和现实不一致，有了这一段，下一个周期上报自动对齐，
+不用等下一次有人经过。
+
+### 换别的传感器
 
 | 部分 | 换成 |
 |---|---|
-| `simulate_motion` | PIR（HC-SR501 / AM312）的 GPIO 中断 |
-| `on_read` 里的假光照 | BH1750 / TSL2591 的 I2C 读取 |
+| PIR | 毫米波 LD2410 / LD2450（能测**静止**的人；UART，注册表里没有组件，要自己解析） |
+| BH1750 | `espressif/veml6040`（可见光 + 色温）、`veml6075`（紫外） |
 
-光照单位是 **lux**（`en2m_u32`）。PIR 通常自带几十秒的保持时间，所以不需要
-在固件里做"无人延时"。
+换成毫米波之后 `on_read(OCCUPANCY)` 的兜底要改成返回解析任务维护的那个变量，
+不能再读 GPIO 了。
+
+光照单位是 **lux**（`en2m_u32`）。PIR 通常自带几十秒的保持时间，
+所以不需要在固件里做"无人延时"。
 
 ---
 
@@ -653,7 +941,7 @@ HA 解锁        → on_write(UNLOCKED) → 提交 → 5 秒内写 NVS
 
 注意**恢复是走 `on_write` 的**，不是直接改属性值。这样设计的理由：
 硬件必须真的被驱动到那个状态，否则属性值和物理世界就不一致了。
-代价是 `bolt_drive`（这里是 `drv_*_init` 的位置）必须在 `en2m_start` 之前准备好。
+代价是 `bolt_drive`（也就是硬件初始化）必须在 `en2m_start` 之前准备好。
 完整分析见 [persistence.md](persistence.md#为什么用-write-而不是直接塞值)。
 
 ### 锁状态是枚举，不是布尔
@@ -836,26 +1124,62 @@ case EN2M_EVENT_RX_DROPPED:    /* 队列扛不住了，该调大 EN2M_QUEUE_LEN 
 
 ---
 
-## 参考驱动
+## 外设组件
 
-`drivers/` 下五个驱动被示例共享，也可以直接拿去用。它们刻意写得很薄——
-硬件归应用，这是分层约定的一部分。
+示例用到的外设驱动**一个都不在这个仓库里**，全部来自
+[ESP 组件注册表](https://components.espressif.com)。
+每个工程在自己的 `main/idf_component.yml` 里声明依赖，
+`idf.py build` 下载到该工程的 `managed_components/`。
 
-| 驱动 | API | 用在 |
-|---|---|---|
-| `drv_gpio_relay` | `init(pin, active_high)` / `set(on, ctx)` / `get(&on, ctx)` | `relay_switch`、`smart_plug` |
-| `drv_gpio_button` | `init(pin, active_low, debounce_ms, cb, arg)` | `relay_switch`、`smart_plug` |
-| `drv_gpio_button_gesture` | `init(pin, active_low, debounce_ms, long_ms, double_gap_ms, cb, ctx)` | `scene_switch` |
-| `drv_gpio_contact` | `init(pin, active_low)` / `get(&open, ctx)` / `watch(isr, arg)` | `contact_sensor` |
-| `drv_dht` | `init(pin, type)` / `get_temperature(&centi_c, ctx)` / `get_humidity(&centi_pct, ctx)` | `th_sensor` |
+| 外设 | 组件 | 版本 | 用在 |
+|---|---|---|---|
+| WS2812 / SK6812 灯带 | [`espressif/led_strip`](https://components.espressif.com/components/espressif/led_strip) | `^3.0.3` | `dimmable_light` |
+| 按键 | [`espressif/button`](https://components.espressif.com/components/espressif/button) | `^4.2.1` | `relay_switch`、`smart_plug`、`scene_switch` |
+| 干簧管 / 门磁 | 同上 | `^4.2.1` | `contact_sensor` |
+| PIR | 同上 | `^4.2.1` | `occupancy_sensor` |
+| AHT20 温湿度 | [`espressif/aht20`](https://components.espressif.com/components/espressif/aht20) | `^2.0.0` | `th_sensor` |
+| BH1750 照度 | [`espressif/bh1750`](https://components.espressif.com/components/espressif/bh1750) | `^2.0.0` | `occupancy_sensor` |
+| 继电器 | 内置 `driver`（一路 GPIO 输出） | — | `relay_switch`、`smart_plug` |
 
-两个约定值得注意：
+### 为什么用注册表而不是自己写
 
-- **所有 getter 都带一个 `void *ctx`**，即使当前实现忽略它。这样驱动可以在
-  不改签名的情况下从"单实例"变成"多实例"，而回调里的 `ctx` 可以直接透传进去
-  （`relay_switch` 里 `drv_gpio_relay_set(value->v.b, ctx)` 就是这么用的）。
-- **`drv_gpio_button` 的回调在 ISR 上**，`debounce_ms` 是在驱动里用时间戳做的
-  软消抖，不占定时器。`drv_gpio_button_gesture` 是唯一的例外：
-  它的回调在任务上，因为手势判定本身需要等待时间流逝。
+自己写一遍 GPIO 消抖、一遍 WS2812 的 RMT 编码、一遍 DHT 的单总线时序，
+写出来的东西**只在你自己的板子上验证过**。
+注册表里的组件被几十万次下载验证过，有 CHANGELOG，
+API 破坏性变更会升主版本号。
+把它们当依赖声明出来，也让读者一眼看见这个示例到底依赖了什么。
+
+### 三件推论
+
+**一、干簧管、PIR、按键是同一个组件。**
+这三样在电路上是同一种东西：一根线、两个电平、会抖。
+`espressif/button` 已经做好消抖和手势识别，
+再写一遍 GPIO 中断没有意义。
+
+**二、继电器没有组件，因为没有东西可抽象。**
+一个引脚、一个电平，`gpio_set_level()` 就是完整的驱动。
+注册表里没有它不是遗漏。
+
+顺便：老版本的 `drv_gpio_relay.c` 自己往 NVS 的 `"drv_relay"`
+命名空间里写了一份状态，每次翻转刷一次盘。那是**第二个真相来源**，
+和组件的属性持久化重复，还额外磨损 flash。删掉驱动顺手删掉了这个问题。
+
+**三、注册表里没有 DHT 组件**，所以 `th_sensor` 用 AHT20。
+这个替换是纯赚的：同量程、更高精度（±0.3 °C vs ±0.5 °C）、
+标准 I²C 没有时序坑、不需要那颗必须外挂的上拉电阻。
+
+### 一个要留意的不兼容
+
+`espressif/aht20` 和 `espressif/sht3x` 走
+[`espressif/i2c_bus`](https://components.espressif.com/components/espressif/i2c_bus)
+封装（句柄类型 `i2c_bus_handle_t`），
+而 `espressif/bh1750` 直接用 IDF 5.x 的 `driver/i2c_master.h`
+（句柄类型 `i2c_master_bus_handle_t`）。
+
+**两者不能共用一个 port 句柄。**
+`th_sensor` 和 `occupancy_sensor` 是两个独立工程，所以互不影响；
+但你要是想把 AHT20 和 BH1750 合到同一块板上，得先统一到一套 I²C API
+——`i2c_bus_get_internal_bus_handle()` 可以从 `i2c_bus` 句柄里
+掏出底层的 `i2c_master_bus_handle_t`，那是最省事的路。
 
 引脚分配建议见 [wiring.md](wiring.md)。

@@ -388,13 +388,13 @@ case EN2M_CMD_STOP_MOTION:  motor_stop();  return ESP_OK;
 
 ```c
 /* 错 */
-drv_gpio_relay_set(!on, NULL);
+gpio_set_level(PIN_RELAY, !on);
 
 /* 对 */
 en2m_attribute_write(ENDPOINT, EN2M_CLUSTER_ON_OFF, EN2M_ATTR_ON_OFF, en2m_bool(!on));
 ```
 
-直接调驱动，组件不知道状态变了，也不会上报。让本地控制走
+直接碰硬件，组件不知道状态变了，也不会上报。让本地控制走
 `en2m_attribute_write`，和远程下发同一条路径。
 
 ### 5.7 风扇：一条命令回调了两次
@@ -459,12 +459,12 @@ en2m_attribute_create(cluster, EN2M_ATTR_ON_OFF, en2m_bool(false), true /* persi
 W en2m_dm: write 1/0x0006/0x0000 rejected: ESP_ERR_INVALID_STATE
 ```
 
-开机恢复是**通过 `attribute_write` 回调**做的，所以你的驱动必须在
+开机恢复是**通过 `attribute_write` 回调**做的，所以你的硬件必须在
 `en2m_start` 之前 init 好。否则回调失败 → 拒绝提交 → **NVS 里的值被当成
 写失败丢掉**，下一次开机又是默认值。
 
 ```c
-ESP_ERROR_CHECK(drv_gpio_relay_init(PIN_RELAY, true));   /* ← 必须在前面 */
+ESP_ERROR_CHECK(relay_init());                           /* ← 必须在前面 */
 ...
 ESP_ERROR_CHECK(en2m_start(&cfg));
 ```

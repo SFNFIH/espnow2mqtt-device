@@ -16,17 +16,24 @@ S3 **不连家庭 Wi-Fi**，只锁定信道跑 ESP-NOW。所以它不需要配�
 
 | 示例 | GPIO | 接什么 | 备注 |
 |---|---|---|---|
-| `relay_switch` | **5** | 继电器模块 `IN` | 高电平有效（`drv_gpio_relay_init(pin, true)`） |
+| `relay_switch` | **5** | 继电器模块 `IN` | 高电平有效（`RELAY_ACTIVE_HIGH true`） |
 | `relay_switch` | **9** | 按键到 GND | 多数 C3 开发板上就是 BOOT 键，不用外接 |
 | `smart_plug` | **5** + **9** | 继电器 `IN` + 按键 | 和 `relay_switch` 相同 |
-| `th_sensor` | **4** | DHT22 `DATA` | **需要 4.7–10 kΩ 上拉到 3V3** |
+| `dimmable_light` | **8** | WS2812 灯带 `DIN` | **C3 DevKit 板载就是这颗灯珠**，不接线也能亮 |
+| `th_sensor` | **4** + **5** | AHT20 `SDA` + `SCL` | I²C，用内部上拉；线长了要外加 4.7 kΩ |
 | `contact_sensor` | **9** | 干簧管 / 门磁的一端到 GND | 低电平有效，用内部上拉 |
-| `dimmable_light` | — | 无（内存 stub） | 换成 LEDC 时自己选引脚 |
-| `fan_controller` | — | 无（内存 stub） | 同上 |
+| `occupancy_sensor` | **4** + **5** | BH1750 `SDA` + `SCL` | I²C，地址 `0x23` |
+| `occupancy_sensor` | **6** | PIR 模块 `OUT` | 高电平有效，`disable_pull = true` |
+| `scene_switch` | **9** | 按键到 GND | 板载 BOOT 键 |
+| `fan_controller` | — | 无（内存 stub） | 换成真执行器时自己选引脚 |
 | `window_cover` | — | 无（内存 stub） | 同上 |
 | `door_lock` | — | 无（内存 stub） | 同上 |
-| `occupancy_sensor` | — | 无（`esp_timer` 模拟 PIR） | 同上 |
+| `thermostat` | — | 无（内存 stub） | 同上 |
 | `firmware/router` | — | 只要供电 | 纯转发，不接外设 |
+
+**两个 I²C 示例都用 GPIO4/5**，但它们是两个独立工程，不会同时跑在一块板上。
+真要把两个传感器合到一块板上，先读
+[examples.md 的 I²C 不兼容提醒](examples.md#一个要留意的不兼容)。
 
 引脚都是 `main.c` 顶部的 `#define`，改一行就换。
 
@@ -41,8 +48,8 @@ C3 只有 22 个 GPIO，其中好几个不能随便用：
 | 0–1 | 谨慎 | 通常接 32 kHz 晶振或按键，看板子原理图 |
 | 2 | **谨慎** | **strapping 引脚**，上电时被采样。接了外设可能导致启动模式不对 |
 | 3 | 可以 | |
-| 4–7 | **推荐** | 最干净的一批。示例用 4（DHT）、5（继电器） |
-| 8 | **谨慎** | strapping 引脚，很多板子上接了板载 LED |
+| 4–7 | **推荐** | 最干净的一批。示例用 4/5（I²C 或继电器）、6（PIR） |
+| 8 | **谨慎** | strapping 引脚。C3 DevKit 上接的是板载 WS2812，`dimmable_light` 正是用它 |
 | 9 | 可以 | strapping（BOOT 键），**但作为输入很好用**，示例都用它当按键 |
 | 10 | 可以 | |
 | 11–17 | **不要用** | 接内部 flash（SPI），动了直接起不来 |
@@ -65,8 +72,19 @@ C3 的 ADC1 在 **GPIO 0–4**。要接模拟传感器（光敏、电位器、NT
 - 带锁存的固态继电器
 
 这个问题在开机恢复持久化状态那一小段时间里也存在
-（`drv_gpio_relay_init` 之前）。所以驱动 init 一定要放在 `app_main` 最前面，
-见 [usage.md 第 5 步](usage.md#第-5-步填配置en2m_start收工)。
+（`relay_init()` 之前）。所以硬件初始化一定要放在 `app_main` 最前面、
+`en2m_start()` 之前，见 [usage.md 第 5 步](usage.md#第-5-步填配置en2m_start收工)。
+
+### WS2812 灯带的供电
+
+一颗灯珠满白约 60 mA，30 颗就是 1.8 A——远超开发板 USB 口能给的。
+**超过 8 颗就要用独立 5 V 电源**，只把 GND 和数据线接回 C3。
+电源不够的典型症状是灯带尾部发红、C3 反复重启。
+
+数据线串一个 220–470 Ω 电阻抑制反射。
+3.3 V 驱动 5 V 灯带在短线上一般能用
+（WS2812B 的阈值是 `0.7 × VDD` = 3.5 V，C3 的 3.3 V 踩在边上），
+长线或者整条不亮就需要一片电平转换（74AHCT125 之类）。
 
 ---
 

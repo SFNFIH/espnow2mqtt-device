@@ -231,6 +231,12 @@ const button_config_t btn_cfg = {
 真要即时响应得改用 `BUTTON_PRESS_DOWN`，在按下的瞬间就发。
 `relay_switch` 里的本地按键如果嫌慢，就是这么改。
 
+**`LONG_PRESS_MS` 必须大于 `CLICK_GAP_MS`。** 组件在
+`iot_button_register_cb()` 里会检查这一条，不满足的话注册
+`BUTTON_LONG_PRESS_START` 会返回 `ESP_ERR_INVALID_ARG`——
+在这个示例里就是 `ESP_ERROR_CHECK` 直接挂掉。
+道理也说得通：连击窗口还没过，"长按"就无从谈起。
+
 **还有一个容易踩的**：双击的**第二下**如果按住超过 `short_press_time`，
 状态机会走到 `PRESS_END` 而不发 `DOUBLE_CLICK`。
 也就是说"快按一下、再按住"这个动作什么都不会发。
@@ -374,6 +380,7 @@ void app_main(void)
 | 单击慢半拍 | 正常，组件在等 `CLICK_GAP_MS`（300 ms）。调小或者改用 `BUTTON_PRESS_DOWN` |
 | 双击老是被当成两次单击 | 两击间隔超了 `CLICK_GAP_MS`，往上调 |
 | "点一下再按住"什么都不发 | 状态机的已知行为，见上面手势时间参数那一节 |
+| 启动就挂在 `button_init()` | `LONG_PRESS_MS` 设得比 `CLICK_GAP_MS` 还小 |
 | HA 重启后自动化被触发一次 | **不该发生**。如果发生了，说明计数器没持久化，检查 NVS 分区 |
 | HA 里没有 `event` 实体 | 新设备在第一次按键之前不声明 `button` cap，按一下就有了；还没有的话是集成版本太老，`event` 平台需要 0.4.0 及以上 |
 

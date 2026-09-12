@@ -70,7 +70,7 @@
 
 ### 怎么挑
 
-- **第一次读这个仓库** → [`relay_switch`](relay_switch)。79 行，把核心思想全讲完了。
+- **第一次读这个仓库** → [`relay_switch`](relay_switch)。112 行，把核心思想全讲完了。
 - **我要做传感器** → 采样很便宜（I²C 读一下）就抄 [`th_sensor`](th_sensor)（只有 `read`）；
   状态是中断来的（门磁、PIR、水浸）就抄 [`contact_sensor`](contact_sensor)。
 - **我要做执行器** → 能瞬间到位（继电器、PWM）就抄 [`relay_switch`](relay_switch)（`write`）；
